@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240" role="img" aria-label="GTFS2 Live Card">
+  <defs>
+    <mask id="cut">
+      <rect width="240" height="240" fill="#fff"/>
+      <circle cx="62" cy="176" r="8" fill="#000"/>
+      <circle cx="178" cy="64" r="8" fill="#000"/>
+      <path d="M120 104 L131 128 L120 122 L109 128 Z" fill="#000"/>
+    </mask>
+  </defs>
+  <g mask="url(#cut)">
+    <path d="M62 176 C62 108 178 132 178 64" stroke="#4DB6E2" stroke-width="20" stroke-linecap="round" fill="none"/>
+    <circle cx="62" cy="176" r="20" fill="#4DB6E2"/>
+    <circle cx="178" cy="64" r="20" fill="#4DB6E2"/>
+    <circle cx="120" cy="120" r="26" fill="#FF6B4A"/>
+  </g>
+</svg>
