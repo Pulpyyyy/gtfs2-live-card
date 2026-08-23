@@ -1,0 +1,116 @@
+{
+ "tram-a": [
+  {
+   "stop_id": "ORLEANS:StopArea:TGARDO1",
+   "time": 1787281775,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:A_A_473_8_A02_5_043420"
+  },
+  {
+   "stop_id": "ORLEANS:StopArea:TGARDO1",
+   "time": 1787283035,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:A_A_473_8_A03_5_045520"
+  },
+  {
+   "stop_id": "ORLEANS:StopArea:TGARDO1",
+   "time": 1787284000,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:A_A_473_8_A04_5_051125"
+  },
+  {
+   "stop_id": "ORLEANS:StopArea:TGARDO1",
+   "time": 1787284870,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:A_A_473_8_A05_5_052555"
+  },
+  {
+   "stop_id": "ORLEANS:StopArea:TGARDO1",
+   "time": 1787285620,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:A_A_473_8_A06_5_053825"
+  },
+  {
+   "stop_id": "ORLEANS:StopArea:TGARDO1",
+   "time": 1787286250,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:A_A_473_8_A07_5_054855"
+  }
+ ],
+ "tram-b": [
+  {
+   "stop_id": "ORLEANS:StopArea:THALMA2",
+   "time": 1787282550,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:B_A_167_8_B01_5_050305"
+  },
+  {
+   "stop_id": "ORLEANS:StopArea:THALMA2",
+   "time": 1787283685,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:B_A_167_8_B03_5_052200"
+  },
+  {
+   "stop_id": "ORLEANS:StopArea:THALMA2",
+   "time": 1787284495,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:B_A_167_8_B02_5_053530"
+  },
+  {
+   "stop_id": "ORLEANS:StopArea:THALMA2",
+   "time": 1787285185,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:B_A_167_8_B05_5_054700"
+  },
+  {
+   "stop_id": "ORLEANS:StopArea:THALMA2",
+   "time": 1787285875,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:B_A_167_8_B04_5_055830"
+  },
+  {
+   "stop_id": "ORLEANS:StopArea:THALMA2",
+   "time": 1787286565,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:B_A_167_8_B06_5_061000"
+  }
+ ],
+ "bus-40": [
+  {
+   "stop_id": "ORLEANS:StopArea:01001712",
+   "time": 1787285401,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:40_R_85_8_4001_5_061001"
+  },
+  {
+   "stop_id": "ORLEANS:StopArea:01001712",
+   "time": 1787286899,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:40_A_86_8_4002_5_060001"
+  },
+  {
+   "stop_id": "ORLEANS:StopArea:01001712",
+   "time": 1787287380,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:40_R_85_8_4002_5_064300"
+  },
+  {
+   "stop_id": "ORLEANS:StopArea:01001712",
+   "time": 1787288459,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:40_A_86_8_4003_5_062601"
+  },
+  {
+   "stop_id": "ORLEANS:StopArea:01001712",
+   "time": 1787289000,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:40_R_85_8_4003_5_071000"
+  },
+  {
+   "stop_id": "ORLEANS:StopArea:01001712",
+   "time": 1787290198,
+   "delay": null,
+   "trip_id": "ORLEANS:VehicleJourney:40_A_86_8_4001_5_065400"
+  }
+ ]
+}

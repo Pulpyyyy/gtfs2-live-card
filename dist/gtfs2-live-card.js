@@ -23,6 +23,10 @@ console.info(
  * project languages), picked from the HA locale (config `language:` to
  * force). A visual editor is provided for the simple, sensors-list
  * configuration.
+ *
+ * LAYOUT: this file plus one module per language in ./lang/, card and editor
+ * strings together, loaded at runtime from wherever this file was installed.
+ * There is no build step: edit either and reload.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 const DEFAULTS = {
@@ -79,259 +83,70 @@ const TILE_DARK = "https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
 
 /* ── i18n ───────────────────────────────────────────────────────────────── */
 
-const STRINGS = {
-    en: {
-        departures: "Departures",
-        realtime: "realtime",
-        scheduled: "scheduled",
-        scheduled_at: "scheduled {t}",
-        no_rt_yet: "no realtime yet",
-        on_time: "on time",
-        due: "due",
-        in_min: "in {n} min",
-        in_h: "in {h} h",
-        in_h_min: "in {h} h {m}",
-        ago_s: "{n} s ago",
-        ago_min: "{n} min ago",
-        tomorrow: "tomorrow",
-        next: "next",
-        to: "to {d}",
-        no_departure: "no departures",
-        none_upcoming: "No upcoming departures",
-        no_dep_sensor: "No departures sensor (entity) for this line",
-        sensor_unavailable: "Sensor unavailable: end of service?",
-        chip_unavailable: "sensor unavailable (end of service?)",
-        line_map: "Line map",
-        buses_running: "{n} {m} running",
-        bus_running: "1 {m} running",
-        tracking: "tracking {m} {v}",
-        line_label: "line {l}",
-        line_view: "← Overview",
-        recenter: "Recenter",
-        zoom_in: "Zoom in",
-        zoom_out: "Zoom out",
-        loading: "Loading positions…",
-        unreachable: "Positions unreachable: check <code>positions_url</code> (details in the console)",
-        no_source: "No positions source: add <code>positions_url</code>, or use sensors exposing route attributes.",
-        no_bus: "No buses running",
-        hint_wheel: "Ctrl + scroll to zoom",
-        hint_touch: "Use two fingers to move the map",
-        next_stop: "next stop: {s}",
-        trace_note: "recent path dashed · full route via the gtfs2 export",
-        updated: "Updated {t} · GTFS-RT",
-        schedule_only: "GTFS schedule only",
-        rt_positions: "Realtime positions",
-        sensors_unavailable: "{n} sensor(s) unavailable",
-        map_updated: "© OpenStreetMap © CARTO · upd {t}",
-        tracking_ended: "tracking ended",
-        close: "Close",
-        feed_stale: "positions frozen ({t}) · end of service?",
-        line_prefix: "{l}: ",
-    },
-    fr: {
-        departures: "Départs",
-        realtime: "temps réel",
-        scheduled: "théorique",
-        scheduled_at: "théorique {t}",
-        no_rt_yet: "pas encore de temps réel",
-        on_time: "à l'heure",
-        due: "imminent",
-        in_min: "dans {n} min",
-        in_h: "dans {h} h",
-        in_h_min: "dans {h} h {m}",
-        ago_s: "il y a {n} s",
-        ago_min: "il y a {n} min",
-        tomorrow: "demain",
-        next: "prochain",
-        to: "vers {d}",
-        no_departure: "aucun passage",
-        none_upcoming: "Aucun passage à venir",
-        no_dep_sensor: "Pas de capteur de départs (entity) pour cette ligne",
-        sensor_unavailable: "Capteur indisponible : fin de service ?",
-        chip_unavailable: "capteur indisponible (fin de service ?)",
-        line_map: "Carte de la ligne",
-        buses_running: "{n} {m} en circulation",
-        bus_running: "1 {m} en circulation",
-        tracking: "suivi du {m} {v}",
-        line_label: "ligne {l}",
-        line_view: "← Vue d'ensemble",
-        recenter: "Recentrer",
-        zoom_in: "Zoomer",
-        zoom_out: "Dézoomer",
-        loading: "Chargement des positions…",
-        unreachable: "Positions injoignables : vérifiez <code>positions_url</code> (détail dans la console)",
-        no_source: "Aucune source de positions : ajoutez <code>positions_url</code>, ou des capteurs exposant les attributs de route.",
-        no_bus: "Aucun bus en circulation",
-        hint_wheel: "Ctrl + molette pour zoomer",
-        hint_touch: "Deux doigts pour déplacer la carte",
-        next_stop: "prochain arrêt : {s}",
-        trace_note: "trajet récent en pointillés · tracé complet via l'export gtfs2",
-        updated: "Mis à jour {t} · GTFS-RT",
-        schedule_only: "Horaires théoriques GTFS",
-        rt_positions: "Positions temps réel",
-        sensors_unavailable: "{n} capteur(s) indisponible(s)",
-        map_updated: "© OpenStreetMap © CARTO · maj {t}",
-        tracking_ended: "suivi terminé",
-        close: "Fermer",
-        feed_stale: "positions figées ({t}) · fin de service ?",
-        line_prefix: "{l} : ",
-    },
-    de: {
-        departures: "Abfahrten",
-        realtime: "Echtzeit",
-        scheduled: "planmäßig",
-        scheduled_at: "planmäßig {t}",
-        no_rt_yet: "noch keine Echtzeitdaten",
-        on_time: "pünktlich",
-        due: "jetzt",
-        in_min: "in {n} Min.",
-        in_h: "in {h} Std.",
-        in_h_min: "in {h} Std. {m}",
-        ago_s: "vor {n} s",
-        ago_min: "vor {n} Min.",
-        tomorrow: "morgen",
-        next: "nächste",
-        to: "nach {d}",
-        no_departure: "keine Abfahrten",
-        none_upcoming: "Keine bevorstehenden Abfahrten",
-        no_dep_sensor: "Kein Abfahrtssensor (entity) für diese Linie",
-        sensor_unavailable: "Sensor nicht verfügbar: Betriebsschluss?",
-        chip_unavailable: "Sensor nicht verfügbar (Betriebsschluss?)",
-        line_map: "Linienkarte",
-        buses_running: "{n} {m} unterwegs",
-        bus_running: "1 {m} unterwegs",
-        tracking: "verfolge {m} {v}",
-        line_label: "Linie {l}",
-        line_view: "← Übersicht",
-        recenter: "Zentrieren",
-        zoom_in: "Vergrößern",
-        zoom_out: "Verkleinern",
-        loading: "Positionen werden geladen…",
-        unreachable: "Positionen nicht erreichbar: <code>positions_url</code> prüfen (Details in der Konsole)",
-        no_source: "Keine Positionsquelle: <code>positions_url</code> angeben oder Sensoren mit Routenattributen verwenden.",
-        no_bus: "Keine Fahrzeuge unterwegs",
-        hint_wheel: "Strg + Scrollen zum Zoomen",
-        hint_touch: "Karte mit zwei Fingern bewegen",
-        next_stop: "nächster Halt: {s}",
-        trace_note: "letzter Weg gestrichelt · vollständige Route über den gtfs2-Export",
-        updated: "Aktualisiert {t} · GTFS-RT",
-        schedule_only: "Nur GTFS-Fahrplan",
-        rt_positions: "Echtzeitpositionen",
-        sensors_unavailable: "{n} Sensor(en) nicht verfügbar",
-        map_updated: "© OpenStreetMap © CARTO · Akt. {t}",
-        tracking_ended: "Verfolgung beendet",
-        close: "Schließen",
-        feed_stale: "Positionen eingefroren ({t}) · Betriebsschluss?",
-        line_prefix: "{l}: ",
-    },
-    es: {
-        departures: "Salidas",
-        realtime: "tiempo real",
-        scheduled: "programado",
-        scheduled_at: "programado {t}",
-        no_rt_yet: "sin tiempo real aún",
-        on_time: "puntual",
-        due: "inminente",
-        in_min: "en {n} min",
-        in_h: "en {h} h",
-        in_h_min: "en {h} h {m}",
-        ago_s: "hace {n} s",
-        ago_min: "hace {n} min",
-        tomorrow: "mañana",
-        next: "próximo",
-        to: "hacia {d}",
-        no_departure: "sin salidas",
-        none_upcoming: "Sin salidas próximas",
-        no_dep_sensor: "Sin sensor de salidas (entity) para esta línea",
-        sensor_unavailable: "Sensor no disponible: ¿fin de servicio?",
-        chip_unavailable: "sensor no disponible (¿fin de servicio?)",
-        line_map: "Mapa de la línea",
-        buses_running: "{n} {m} en circulación",
-        bus_running: "1 {m} en circulación",
-        tracking: "siguiendo el {m} {v}",
-        line_label: "línea {l}",
-        line_view: "← Vista general",
-        recenter: "Centrar",
-        zoom_in: "Acercar",
-        zoom_out: "Alejar",
-        loading: "Cargando posiciones…",
-        unreachable: "Posiciones inaccesibles: revise <code>positions_url</code> (detalles en la consola)",
-        no_source: "Sin fuente de posiciones: añada <code>positions_url</code> o use sensores con atributos de ruta.",
-        no_bus: "Ningún vehículo en circulación",
-        hint_wheel: "Ctrl + rueda para hacer zoom",
-        hint_touch: "Use dos dedos para mover el mapa",
-        next_stop: "próxima parada: {s}",
-        trace_note: "recorrido reciente a trazos · trazado completo vía el export gtfs2",
-        updated: "Actualizado {t} · GTFS-RT",
-        schedule_only: "Solo horarios GTFS",
-        rt_positions: "Posiciones en tiempo real",
-        sensors_unavailable: "{n} sensor(es) no disponible(s)",
-        map_updated: "© OpenStreetMap © CARTO · act. {t}",
-        tracking_ended: "seguimiento terminado",
-        close: "Cerrar",
-        feed_stale: "posiciones congeladas ({t}) · ¿fin de servicio?",
-        line_prefix: "{l}: ",
-    },
-    pt: {
-        departures: "Partidas",
-        realtime: "tempo real",
-        scheduled: "previsto",
-        scheduled_at: "previsto {t}",
-        no_rt_yet: "ainda sem tempo real",
-        on_time: "pontual",
-        due: "iminente",
-        in_min: "em {n} min",
-        in_h: "em {h} h",
-        in_h_min: "em {h} h {m}",
-        ago_s: "há {n} s",
-        ago_min: "há {n} min",
-        tomorrow: "amanhã",
-        next: "próximo",
-        to: "para {d}",
-        no_departure: "sem partidas",
-        none_upcoming: "Sem partidas previstas",
-        no_dep_sensor: "Sem sensor de partidas (entity) para esta linha",
-        sensor_unavailable: "Sensor indisponível: fim de serviço?",
-        chip_unavailable: "sensor indisponível (fim de serviço?)",
-        line_map: "Mapa da linha",
-        buses_running: "{n} {m} em circulação",
-        bus_running: "1 {m} em circulação",
-        tracking: "a seguir o {m} {v}",
-        line_label: "linha {l}",
-        line_view: "← Vista geral",
-        recenter: "Centrar",
-        zoom_in: "Ampliar",
-        zoom_out: "Reduzir",
-        loading: "A carregar posições…",
-        unreachable: "Posições inacessíveis: verifique <code>positions_url</code> (detalhes na consola)",
-        no_source: "Sem fonte de posições: adicione <code>positions_url</code> ou use sensores que exponham os atributos de rota.",
-        no_bus: "Nenhum veículo em circulação",
-        hint_wheel: "Ctrl + roda para ampliar",
-        hint_touch: "Use dois dedos para mover o mapa",
-        next_stop: "próxima paragem: {s}",
-        trace_note: "percurso recente a tracejado · traçado completo via export gtfs2",
-        updated: "Atualizado {t} · GTFS-RT",
-        schedule_only: "Apenas horário GTFS",
-        rt_positions: "Posições em tempo real",
-        sensors_unavailable: "{n} sensor(es) indisponível(eis)",
-        map_updated: "© OpenStreetMap © CARTO · atu. {t}",
-        tracking_ended: "seguimento terminado",
-        close: "Fechar",
-        feed_stale: "posições paradas ({t}) · fim de serviço?",
-        line_prefix: "{l}: ",
-    },
+/* Every language is a file of its own in ./lang/, edited straight there and
+ * fetched the first time it is needed. There is no build step and no language
+ * baked into this file: en.js is simply the one to copy when adding a new one.
+ *
+ * `tr()` stays synchronous because every render path calls it, the 30-second
+ * countdown tick included, and none of them can await. What makes that safe is
+ * that the card does not render at all until its language has landed: see the
+ * `_langReady()` guard in _update(). So by the time anything calls `tr()`, the
+ * strings are already in.
+ *
+ * Adding a language: copy ./lang/en.js, translate the values, and add its code
+ * to LANGS below. */
+
+const LANGS = ["en", "fr", "de", "es", "pt"];   // the gtfs2 project languages
+
+const LANG = {};
+
+/* Resolved against this file's own URL, so the same code works under
+ * /hacsfiles/gtfs2-live-card/ (HACS) and /local/ (manual install) without
+ * having to know which one it is. */
+const LANG_URL = (code) => new URL(`./lang/${code}.js`, import.meta.url).href;
+
+const LANG_PENDING = new Map();   // code → promise, so five cards fetch once
+const LANG_WAITING = new Set();   // elements to notify when a language lands
+
+/* Fetches one language, then tells everything that asked for it to render.
+ *
+ * A failure is recorded rather than retried: `LANG[code]` is filled with an
+ * empty set of tables, which makes `tr()` fall back to the keys themselves. A
+ * card showing "departures" is poor, but it is on screen and it says why in
+ * the console, where a card blocked forever on a missing file would just be
+ * blank. */
+const loadLang = (code) => {
+    if (LANG[code] || !LANGS.includes(code) || LANG_PENDING.has(code)) return;
+    LANG_PENDING.set(code, import(LANG_URL(code))
+        .then((mod) => {
+            const data = mod?.default;
+            if (!data?.strings) throw new Error("no default export with strings");
+            LANG[code] = data;
+        })
+        .catch((err) => {
+            console.error(`gtfs2-live-card: could not load ${LANG_URL(code)}, the card `
+                + `will show its string keys instead of ${code} text`, err);
+            LANG[code] = { strings: {}, modes: {}, editor: {} };
+        })
+        .finally(() => {
+            for (const el of [...LANG_WAITING]) el._langArrived(code);
+        }));
 };
 
-// transport mode words, singular/plural, per language
-const MODE_WORDS = {
-    en: { bus: ["bus", "buses"], tram: ["tram", "trams"], metro: ["metro", "metros"], train: ["train", "trains"], ferry: ["ferry", "ferries"], trolleybus: ["trolleybus", "trolleybuses"], cable: ["gondola", "gondolas"], funicular: ["funicular", "funiculars"], monorail: ["monorail", "monorails"], vehicle: ["vehicle", "vehicles"] },
-    fr: { bus: ["bus", "bus"], tram: ["tram", "trams"], metro: ["métro", "métros"], train: ["train", "trains"], ferry: ["ferry", "ferrys"], trolleybus: ["trolleybus", "trolleybus"], cable: ["téléphérique", "téléphériques"], funicular: ["funiculaire", "funiculaires"], monorail: ["monorail", "monorails"], vehicle: ["véhicule", "véhicules"] },
-    de: { bus: ["Bus", "Busse"], tram: ["Tram", "Trams"], metro: ["Metro", "Metros"], train: ["Zug", "Züge"], ferry: ["Fähre", "Fähren"], trolleybus: ["Obus", "Obusse"], cable: ["Seilbahn", "Seilbahnen"], funicular: ["Standseilbahn", "Standseilbahnen"], monorail: ["Einschienenbahn", "Einschienenbahnen"], vehicle: ["Fahrzeug", "Fahrzeuge"] },
-    es: { bus: ["autobús", "autobuses"], tram: ["tranvía", "tranvías"], metro: ["metro", "metros"], train: ["tren", "trenes"], ferry: ["ferri", "ferris"], trolleybus: ["trolebús", "trolebuses"], cable: ["teleférico", "teleféricos"], funicular: ["funicular", "funiculares"], monorail: ["monorraíl", "monorraíles"], vehicle: ["vehículo", "vehículos"] },
-    pt: { bus: ["autocarro", "autocarros"], tram: ["elétrico", "elétricos"], metro: ["metro", "metros"], train: ["comboio", "comboios"], ferry: ["ferry", "ferries"], trolleybus: ["troleicarro", "troleicarros"], cable: ["teleférico", "teleféricos"], funicular: ["funicular", "funiculares"], monorail: ["monocarril", "monocarris"], vehicle: ["veículo", "veículos"] },
+const tr = (lang, key, vars) => {
+    let s = LANG[lang]?.strings?.[key] ?? key;
+    if (vars) for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, v);
+    return s;
 };
 
-const modeWord = (lang, key, plural) => (MODE_WORDS[lang]?.[key] || MODE_WORDS.en[key] || MODE_WORDS.en.vehicle)[plural ? 1 : 0];
+const modeWords = (lang) => LANG[lang]?.modes || {};
+
+const editorLabels = (lang) => LANG[lang]?.editor || {};
+
+const modeWord = (lang, key, plural) => {
+    const w = modeWords(lang);
+    return (w[key] || w.vehicle || [key, key])[plural ? 1 : 0];
+};
 
 // GTFS route_type (incl. extended codes) → mode key
 const modeKey = (rt) => {
@@ -406,19 +221,11 @@ const modeGlyph = (mode, r, fill) => {
 };
 
 
-const LANGS = ["en", "fr", "de", "es", "pt"];   // the gtfs2 project languages
-
 const resolveLang = (config, hass) => {
     const c = config?.language;
     if (LANGS.includes(c)) return c;
     const two = String(hass?.locale?.language || hass?.language || "en").toLowerCase().slice(0, 2);
     return LANGS.includes(two) ? two : "en";
-};
-
-const tr = (lang, key, vars) => {
-    let s = STRINGS[lang]?.[key] ?? STRINGS.en[key] ?? key;
-    if (vars) for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, v);
-    return s;
 };
 
 /* ── helpers ────────────────────────────────────────────────────────────── */
@@ -658,11 +465,30 @@ class Gtfs2LiveCard extends HTMLElement {
     }
 
     _t(key, vars) {
-        return tr(resolveLang(this._config, this._hass), key, vars);
+        return tr(this._lang(), key, vars);
     }
 
     _lang() {
         return resolveLang(this._config, this._hass);
+    }
+
+    /* True once this card's strings are in, and the gate every render waits
+     * behind. On a miss it starts the fetch and registers for the callback,
+     * so asking is also what gets the language moving. */
+    _langReady() {
+        const lang = this._lang();
+        if (LANG[lang]) return true;
+        LANG_WAITING.add(this);
+        loadLang(lang);
+        return false;
+    }
+
+    /* Called by loadLang() once the strings are in (or have failed). Nothing
+     * has been drawn yet, so this is the first real render. */
+    _langArrived(code) {
+        if (code !== this._lang()) return;   // a different card's language
+        LANG_WAITING.delete(this);
+        this._update();
     }
 
     _storageKey() {
@@ -741,6 +567,11 @@ class Gtfs2LiveCard extends HTMLElement {
             if (rc && (!/^#[0-9a-fA-F]{6}$/.test(rc) || luminance(rc) > 0.82)) rc = null;
             const rtype = attrVal(at, "route_route_type", "route_type");
             d.mode = rtype != null ? modeKey(rtype) : (cached?.mode || "bus");
+            // a line with no departure at all today: the integration says when
+            // it runs next, which may be days away (a weekend, a night bus out
+            // of season). Kept per line so the badge can mark it.
+            d.nextIn = at ? attrVal(at, "next_service_in_days") : null;
+            d.nextDate = at ? attrVal(at, "next_service_date") : null;
             // the sensor already carries the right mdi icon for its route_type
             const mdi = attrVal(at, "icon");
             d.icon = mdi || cached?.icon || MDI_BY_MODE[d.mode] || "mdi:bus";
@@ -795,6 +626,7 @@ class Gtfs2LiveCard extends HTMLElement {
     }
 
     disconnectedCallback() {
+        LANG_WAITING.delete(this);
         this._stopPolling();
         if (this._tick30) { clearInterval(this._tick30); this._tick30 = null; }
         if (this._visHandler) { document.removeEventListener("visibilitychange", this._visHandler); this._visHandler = null; }
@@ -915,6 +747,9 @@ class Gtfs2LiveCard extends HTMLElement {
 
     _update() {
         if (!this._config || !this._hass) return;
+        // Nothing is drawn in a language the card does not have yet: rendering
+        // now would put string keys on screen and swap them a moment later.
+        if (!this._langReady()) return;
         if (!this._built) {
             this._buildShell();
             this._built = true;
@@ -1036,6 +871,9 @@ class Gtfs2LiveCard extends HTMLElement {
     /* ── HEADER & FOOTER ────────────────────────────────────────────────── */
 
     _renderHeader() {
+        // the shell only exists once the strings are in: a fetch that lands
+        // first must not draw anything
+        if (!this._built) return;
         const srcs = this._depSources();
         const defs = this._lineDefs();
         const many = defs.length > 1;
@@ -1075,6 +913,37 @@ class Gtfs2LiveCard extends HTMLElement {
                         : `<ha-icon icon="${esc(own || d.icon || "mdi:bus")}"></ha-icon>`;
                 }
                 const chip = chipInner ? `<span class="badge-mode">${chipInner}</span>` : "";
+                // Nothing runs on this line right now. Mark it on the badge
+                // itself, opposite the mode chip, so a line resting for the
+                // weekend is told apart at a glance from one that is simply
+                // between two buses. The date goes in the title, where the
+                // destination already is.
+                // How far off the next service is, in days. 0 means the line
+                // did run today and its departures are simply behind us, which
+                // is not the same thing as a line resting: it starts again
+                // tomorrow morning, so the badge is left alone. The stroke is
+                // for a line with nothing today AND nothing until later.
+                const nIn = d.nextIn;
+                // -1 means the feed has no service left for this journey at all,
+                // which deserves the mark as much as a long rest does
+                const resting = Number.isFinite(nIn) && nIn !== 0;
+                let rest = "";
+                if (resting) {
+                    // A single diagonal, not a cross: one stroke leaves the
+                    // number far more readable, and a line must still show its
+                    // number when it is not running.
+                    //
+                    // The stroke is the badge's own ink at 65%, which alone
+                    // measures as low as 2.2:1 on a mid green or a grey line.
+                    // The halo underneath is the opposite ink, which lifts it
+                    // past 10:1 on every line colour without making the stroke
+                    // any heavier. Drawn in SVG because a gradient cannot take
+                    // a halo.
+                    rest = `<svg class="badge-slash" viewBox="0 0 60 60" preserveAspectRatio="none" aria-hidden="true">`
+                        + `<path class="slash-halo" d="M10 50 L50 10" fill="none" stroke-linecap="round"/>`
+                        + `<path d="M10 50 L50 10" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/>`
+                        + `</svg>`;
+                }
                 // the label reads against its own line colour, the same rule
                 // the map markers follow: a light line colour takes dark text
                 const bg = d.color || this._config.line_color;
@@ -1085,7 +954,21 @@ class Gtfs2LiveCard extends HTMLElement {
                 // chip now overflows the badge, and a see-through disc would
                 // pick up the card behind it and read as a cut-off half moon
                 const chipBg = `color-mix(in srgb, ${bink === "#ffffff" ? "#000" : "#fff"} 40%, ${esc(bg)})`;
-                return `<div class="badge ${many ? "clickable" : ""} ${sel ? "sel" : ""} ${dim ? "dim" : ""}" style="background:${esc(bg)};color:${bink};--chip-bg:${chipBg}"${a11y} title="${esc(bdest)}">${esc(this._lineLabelOf(d))}${chip}</div>`;
+                // the resting note joins the destination in the tooltip, which
+                // is the only place a badge can carry a sentence
+                const restTitle = resting
+                    ? (nIn < 0 ? this._t("resting_never")
+                        : nIn === 1 ? this._t("resting_tomorrow")
+                        : this._t("resting_days", { n: nIn }))
+                    : "";
+                const btitle = [bdest, restTitle].filter(Boolean).join(" · ");
+                // the halo takes the ink the other way round, so it separates
+                // the stroke from the badge whichever way the contrast runs
+                const opp = bink === "#ffffff" ? "#1b1b1b" : "#ffffff";
+                // the stroke says it visually and title says it on hover, but
+                // neither reaches a screen reader: state it in the text layer
+                const restSr = restTitle ? `<span class="sr-only">${esc(restTitle)}</span>` : "";
+                return `<div class="badge ${many ? "clickable" : ""} ${sel ? "sel" : ""} ${dim ? "dim" : ""} ${resting ? "resting" : ""}" style="background:${esc(bg)};color:${bink};--chip-bg:${chipBg};--opp-ink:${opp}"${a11y} title="${esc(btitle)}"><span class="badge-num">${esc(this._lineLabelOf(d))}</span>${restSr}${chip}${rest}</div>`;
             })
             .join("");
         const titles = (title || dest)
@@ -1095,6 +978,7 @@ class Gtfs2LiveCard extends HTMLElement {
     }
 
     _renderFooter() {
+        if (!this._built) return;   // no shell yet: see _renderHeader
         // consider every departure sensor, not just the primary one: one line
         // ending its service must not relabel the whole card as schedule-only
         const lang = this._lang();
@@ -1156,6 +1040,7 @@ class Gtfs2LiveCard extends HTMLElement {
     }
 
     _renderDepartures() {
+        if (!this._built) return;   // no shell yet: see _renderHeader
         const head = this.shadowRoot.getElementById("dep-head");
         const body = this.shadowRoot.getElementById("dep-body");
         // map-only card (no departure sensor anywhere): hide the pane entirely
@@ -1498,6 +1383,7 @@ class Gtfs2LiveCard extends HTMLElement {
     /* ── PANE 2: MAP rendering ──────────────────────────────────────────── */
 
     _renderMapSection() {
+        if (!this._built) return;   // no shell yet: see _renderHeader
         const head = this.shadowRoot.getElementById("map-head");
         const body = this.shadowRoot.getElementById("map-body");
         head.setAttribute("aria-expanded", String(!this._collapsed.map));
@@ -2428,6 +2314,22 @@ class Gtfs2LiveCard extends HTMLElement {
            line colour. */
         .badge-mode { position: absolute; right: -4px; bottom: -5px; width: 29px; height: 29px; border-radius: 50%; background: var(--chip-bg, color-mix(in srgb, #000 40%, transparent)); display: flex; align-items: center; justify-content: center; color: inherit; pointer-events: none; --mdc-icon-size: 24px; }
         .badge-mode ha-icon { display: flex; }
+        /* a line with no service is struck through by a single diagonal, at
+           65% so it stays a note rather than a warning: the number underneath
+           must remain readable. The halo below the stroke carries the opposite
+           ink, which is what keeps the stroke visible on a mid green or grey
+           line, where 65% ink alone measures barely 2.2:1. */
+        /* the number sits above the stroke, so the diagonal crosses the badge
+           without burying the digits */
+        .badge-num { position: relative; z-index: 3; line-height: 1; }
+        /* read out, never drawn: the diagonal is the visual half of this */
+        .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+        .badge-slash { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; opacity: 0.65; border-radius: 13px; }
+        .slash-halo { stroke: var(--opp-ink, #000); stroke-width: 5.5; opacity: 0.55; }
+        /* the number keeps its full ink: a line still shows its number when it
+           is not running. Only the badge as a whole steps back a little. */
+        .badge.resting { opacity: 0.92; }
+        .badge.resting.sel { opacity: 1; }
         .badge-glyph { width: 24px; height: 24px; display: block; }
         .badge.clickable { cursor: pointer; }
         .badge.sel { outline: 2px solid var(--primary-color); outline-offset: 2px; }
@@ -2510,134 +2412,6 @@ class Gtfs2LiveCard extends HTMLElement {
 customElements.define("gtfs2-live-card", Gtfs2LiveCard);
 
 /* ── VISUAL EDITOR ──────────────────────────────────────────────────────── */
-
-const EDITOR_LABELS = {
-    en: {
-        title: "Title (clear to hide the title line)",
-        max_departures: "Departures shown",
-        refresh: "Map refresh (seconds)",
-        mode_icons: "Mode icons on the line badges",
-        line_n: "Line",
-        add_line: "+ Add a line",
-        remove_line: "Remove this line",
-        l_entity: "GTFS2 sensor (entity)",
-        l_line: "Badge label (empty = derived)",
-        l_positions_url: "Positions file (empty = derived)",
-        l_route_url: "Route file (empty = derived)",
-        entities: "Lines (gtfs2 sensors)",
-        sec_look: "Map appearance",
-        sec_adv: "Advanced",
-        sec_over: "Per line overrides",
-        map_style: "Map style",
-        map_aspect: "Map aspect ratio (e.g. 4/3)",
-        station_color: "Station marker color",
-        language: "Language",
-        latitude: "Station latitude (empty = located on the route)",
-        longitude: "Station longitude",
-        derived: "derived from the sensor",
-        no_line: "Pick at least one gtfs2 sensor above.",
-    },
-    fr: {
-        title: "Titre (vider pour masquer la ligne de titre)",
-        max_departures: "Passages affichés",
-        refresh: "Rafraîchissement carte (secondes)",
-        mode_icons: "Icônes de modalité sur les badges",
-        line_n: "Ligne",
-        add_line: "+ Ajouter une ligne",
-        remove_line: "Supprimer cette ligne",
-        l_entity: "Capteur GTFS2 (entity)",
-        l_line: "Badge (vide = déduit)",
-        l_positions_url: "Fichier positions (vide = déduit)",
-        l_route_url: "Fichier tracé (vide = déduit)",
-        entities: "Lignes (capteurs gtfs2)",
-        sec_look: "Apparence de la carte",
-        sec_adv: "Avancé",
-        sec_over: "Surcharges par ligne",
-        map_style: "Style de carte",
-        map_aspect: "Proportions de la carte (ex. 4/3)",
-        station_color: "Couleur du marqueur de station",
-        language: "Langue",
-        latitude: "Latitude de la station (vide = située sur le tracé)",
-        longitude: "Longitude de la station",
-        derived: "déduit du capteur",
-        no_line: "Choisissez au moins un capteur gtfs2 ci-dessus.",
-    },
-    de: {
-        title: "Titel (leeren, um die Titelzeile auszublenden)",
-        max_departures: "Angezeigte Abfahrten",
-        refresh: "Kartenaktualisierung (Sekunden)",
-        mode_icons: "Verkehrsmittel-Icons auf den Linien-Badges",
-        line_n: "Linie",
-        add_line: "+ Linie hinzufügen",
-        remove_line: "Diese Linie entfernen",
-        l_entity: "GTFS2-Sensor (entity)",
-        l_line: "Badge-Text (leer = abgeleitet)",
-        l_positions_url: "Positionsdatei (leer = abgeleitet)",
-        l_route_url: "Routendatei (leer = abgeleitet)",
-        entities: "Linien (gtfs2-Sensoren)",
-        sec_look: "Kartendarstellung",
-        sec_adv: "Erweitert",
-        sec_over: "Overrides je Linie",
-        map_style: "Kartenstil",
-        map_aspect: "Seitenverhältnis der Karte (z. B. 4/3)",
-        station_color: "Farbe der Stationsmarkierung",
-        language: "Sprache",
-        latitude: "Breitengrad der Station (leer = auf der Route)",
-        longitude: "Längengrad der Station",
-        derived: "aus dem Sensor abgeleitet",
-        no_line: "Bitte oben mindestens einen gtfs2-Sensor wählen.",
-    },
-    es: {
-        title: "Título (vaciar para ocultar la línea de título)",
-        max_departures: "Salidas mostradas",
-        refresh: "Refresco del mapa (segundos)",
-        mode_icons: "Iconos de modo en los badges de línea",
-        line_n: "Línea",
-        add_line: "+ Añadir una línea",
-        remove_line: "Eliminar esta línea",
-        l_entity: "Sensor GTFS2 (entity)",
-        l_line: "Etiqueta del badge (vacío = deducido)",
-        l_positions_url: "Archivo de posiciones (vacío = deducido)",
-        l_route_url: "Archivo de trazado (vacío = deducido)",
-        entities: "Líneas (sensores gtfs2)",
-        sec_look: "Aspecto del mapa",
-        sec_adv: "Avanzado",
-        sec_over: "Ajustes por línea",
-        map_style: "Estilo del mapa",
-        map_aspect: "Proporción del mapa (p. ej. 4/3)",
-        station_color: "Color del marcador de estación",
-        language: "Idioma",
-        latitude: "Latitud de la estación (vacío = situada en el trazado)",
-        longitude: "Longitud de la estación",
-        derived: "derivado del sensor",
-        no_line: "Elige al menos un sensor gtfs2 arriba.",
-    },
-    pt: {
-        title: "Título (esvaziar para ocultar a linha de título)",
-        max_departures: "Partidas exibidas",
-        refresh: "Atualização do mapa (segundos)",
-        mode_icons: "Ícones de modo nos badges de linha",
-        line_n: "Linha",
-        add_line: "+ Adicionar uma linha",
-        remove_line: "Remover esta linha",
-        l_entity: "Sensor GTFS2 (entity)",
-        l_line: "Etiqueta do badge (vazio = deduzido)",
-        l_positions_url: "Ficheiro de posições (vazio = deduzido)",
-        l_route_url: "Ficheiro de traçado (vazio = deduzido)",
-        entities: "Linhas (sensores gtfs2)",
-        sec_look: "Aspeto do mapa",
-        sec_adv: "Avançado",
-        sec_over: "Substituições por linha",
-        map_style: "Estilo do mapa",
-        map_aspect: "Proporção do mapa (ex. 4/3)",
-        station_color: "Cor do marcador da estação",
-        language: "Idioma",
-        latitude: "Latitude da estação (vazio = situada no traçado)",
-        longitude: "Longitude da estação",
-        derived: "derivado do sensor",
-        no_line: "Escolha pelo menos um sensor gtfs2 acima.",
-    },
-};
 
 class Gtfs2LiveCardEditor extends HTMLElement {
     setConfig(config) {
@@ -2733,6 +2507,9 @@ class Gtfs2LiveCardEditor extends HTMLElement {
     _render() {
         if (!this._hass || !this._config) return;
         const lang = resolveLang(this._config, this._hass);
+        // like the card: nothing is drawn until the strings are in, or the
+        // form would come up labelled with its own field names
+        if (!LANG[lang]) { LANG_WAITING.add(this); loadLang(lang); return; }
         if (!this._built) {
             this.innerHTML = "";
             // the lines ARE the entities: one multi picker replaces the
@@ -2764,7 +2541,7 @@ class Gtfs2LiveCardEditor extends HTMLElement {
             this._built = true;
             this._linesCount = -1;
         }
-        const L = EDITOR_LABELS[lang];
+        const L = editorLabels(lang);
         this._lookSec.querySelector("summary").textContent = L.sec_look;
         this._overSec.querySelector("summary").textContent = L.sec_over;
         this._advSec.querySelector("summary").textContent = L.sec_adv;
@@ -2777,7 +2554,7 @@ class Gtfs2LiveCardEditor extends HTMLElement {
         if (ejson !== this._lastEnts) { this._lastEnts = ejson; this._entForm.data = { entities: ents }; }
         this._globalForm.hass = this._hass;
         this._globalForm.schema = this._globalSchema();
-        this._globalForm.computeLabel = (s) => EDITOR_LABELS[lang][s.name] ?? s.name;
+        this._globalForm.computeLabel = (s) => L[s.name] ?? s.name;
         const gdata = {
             title: this._config.title ?? "",
             max_departures: this._config.max_departures ?? DEFAULTS.max_departures,
@@ -2814,6 +2591,16 @@ class Gtfs2LiveCardEditor extends HTMLElement {
         else (this._lineForms || []).forEach((f) => { f.hass = this._hass; });
     }
 
+    _langArrived(code) {
+        if (code !== resolveLang(this._config, this._hass)) return;
+        LANG_WAITING.delete(this);
+        this._render();
+    }
+
+    disconnectedCallback() {
+        LANG_WAITING.delete(this);
+    }
+
     // the entity picker is the source of truth for which lines exist: keep
     // the overrides of the entities that stay, drop those of the ones removed
     _entitiesChanged(ev) {
@@ -2829,7 +2616,7 @@ class Gtfs2LiveCardEditor extends HTMLElement {
 
     _buildLines() {
         const lang = resolveLang(this._config, this._hass);
-        const L = EDITOR_LABELS[lang];
+        const L = editorLabels(lang);
         this._linesBox.innerHTML = "";
         this._lineForms = [];
         if (!this._lines.length) {

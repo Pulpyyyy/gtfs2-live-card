@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Harnais de capture — gtfs2-live-card</title>
+<style>
+  :root {
+    --card-background-color: #ffffff;
+    --primary-text-color: #212121;
+    --secondary-text-color: #727272;
+    --divider-color: rgba(0, 0, 0, 0.12);
+    --secondary-background-color: #fafafa;
+    --primary-color: #03a9f4;
+    --accent-color: #ff9800;
+    --error-color: #db4437;
+    --warning-color: #ffa600;
+    --success-color: #43a047;
+    --ha-card-border-radius: 12px;
+    --ha-card-border-color: #e0e0e0;
+    --page-bg: #fafafa;
+  }
+  :root.dark {
+    --card-background-color: #1c1c1c;
+    --primary-text-color: #e1e1e1;
+    --secondary-text-color: #9b9b9b;
+    --divider-color: rgba(225, 225, 225, 0.12);
+    --secondary-background-color: #202020;
+    --ha-card-border-color: #383838;
+    --page-bg: #111111;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: Roboto, "Segoe UI", system-ui, sans-serif;
+    background: var(--page-bg);
+    color: var(--primary-text-color);
+    -webkit-font-smoothing: antialiased;
+  }
+  #stage { padding: 20px; display: grid; gap: 18px; justify-content: center; align-content: start; }
+  .cell { display: flex; flex-direction: column; gap: 6px; }
+  .caption {
+    font-size: 13px; font-weight: 500; color: var(--secondary-text-color);
+    display: flex; align-items: center; gap: 7px; padding-left: 2px;
+  }
+  .caption .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  #fatal { color: #e01f1f; font: 13px monospace; white-space: pre-wrap; padding: 12px; }
+</style>
+</head>
+<body>
+<div id="fatal"></div>
+<div id="stage"></div>
+
+<script>
+/* ── Stubs des éléments Home Assistant ───────────────────────────────────
+ * La carte n'en touche que deux : <ha-card>, son conteneur, et <ha-icon>,
+ * qu'elle n'émet que si le capteur porte une icône différente de celle de
+ * son mode. Tout le reste de son iconographie est du SVG inline. */
+const MDI = {
+  "mdi:bus": "M18,11H6V6H18M16.5,17A1.5,1.5 0 0,1 15,15.5A1.5,1.5 0 0,1 16.5,14A1.5,1.5 0 0,1 18,15.5A1.5,1.5 0 0,1 16.5,17M7.5,17A1.5,1.5 0 0,1 6,15.5A1.5,1.5 0 0,1 7.5,14A1.5,1.5 0 0,1 9,15.5A1.5,1.5 0 0,1 7.5,17M4,16C4,16.88 4.39,17.67 5,18.22V20A1,1 0 0,0 6,21H7A1,1 0 0,0 8,20V19H16V20A1,1 0 0,0 17,21H18A1,1 0 0,0 19,20V18.22C19.61,17.67 20,16.88 20,16V6C20,2.5 16.42,2 12,2C7.58,2 4,2.5 4,6V16Z",
+  "mdi:tram": "M19,16.94V8.5C19,5.71 16.39,5.1 13,5L13.75,3.5H17V2H7V3.5H11.75L11,5C7.86,5.11 5,5.73 5,8.5V16.94C5,18.39 6.19,19.6 7.59,19.91L6,21.5V22H8.23L10.23,20H14L16,22H18V21.5L16.5,20H16.42C18.11,20 19,18.63 19,16.94M12,18.5A1.5,1.5 0 0,1 10.5,17A1.5,1.5 0 0,1 12,15.5A1.5,1.5 0 0,1 13.5,17A1.5,1.5 0 0,1 12,18.5M17,14H7V9H17V14Z",
+};
+
+class HaIcon extends HTMLElement {
+  static get observedAttributes() { return ["icon"]; }
+  connectedCallback() { this._render(); }
+  attributeChangedCallback() { this._render(); }
+  _render() {
+    const d = MDI[this.getAttribute("icon")] || MDI["mdi:bus"];
+    this.style.display = "inline-flex";
+    this.style.alignItems = "center";
+    this.style.justifyContent = "center";
+    this.innerHTML =
+      `<svg viewBox="0 0 24 24" style="width:var(--mdc-icon-size,24px);` +
+      `height:var(--mdc-icon-size,24px);fill:currentColor;display:block">` +
+      `<path d="${d}"/></svg>`;
+  }
+}
+customElements.define("ha-icon", HaIcon);
+
+/* <ha-form> pilote l'éditeur : Home Assistant le rend à partir d'un schéma,
+ * champ par champ. Ce stub en reprend la forme et les cinq sélecteurs que
+ * l'éditeur de cette carte utilise — assez pour que la capture montre la
+ * disposition réelle, sans prétendre imiter le composant au pixel près. */
+class HaForm extends HTMLElement {
+  set schema(v) { this._schema = v; this._render(); }
+  set data(v) { this._data = v || {}; this._render(); }
+  set hass(v) { this._hass = v; }
+  set computeLabel(f) { this._label = f; this._render(); }
+
+  _render() {
+    if (!this._schema) return;
+    this.style.display = "grid";
+    this.style.gap = "14px";
+    this.style.padding = "6px 0";
+    this.innerHTML = "";
+    for (const field of this._schema) {
+      const kind = Object.keys(field.selector || {})[0] || "text";
+      const value = (this._data || {})[field.name];
+      const label = this._label ? this._label(field) : field.name;
+      this.appendChild(kind === "boolean"
+        ? this._toggle(label, value)
+        : this._input(label, value, kind, field));
+    }
+  }
+
+  _shell(label) {
+    const box = document.createElement("div");
+    box.style.cssText =
+      "border-radius: 6px 6px 0 0; background: var(--secondary-background-color);" +
+      "border-bottom: 1px solid var(--secondary-text-color); padding: 8px 12px 6px;";
+    const cap = document.createElement("div");
+    cap.textContent = label;
+    cap.style.cssText = "font-size: 12px; color: var(--secondary-text-color); margin-bottom: 3px;";
+    box.appendChild(cap);
+    return box;
+  }
+
+  _input(label, value, kind, field) {
+    const box = this._shell(label);
+    const val = document.createElement("div");
+    const shown = value === "" || value == null
+      ? (kind === "entity" ? "" : "—")
+      : Array.isArray(value) ? value.join(", ") : String(value);
+    val.textContent = shown;
+    val.style.cssText = "font-size: 15px; color: var(--primary-text-color); min-height: 20px;" +
+      (shown === "—" ? "opacity:.35;" : "");
+    box.appendChild(val);
+    if (kind === "select") {
+      box.style.position = "relative";
+      const caret = document.createElement("div");
+      caret.textContent = "▾";
+      caret.style.cssText = "position:absolute; right:12px; bottom:6px; color: var(--secondary-text-color);";
+      box.appendChild(caret);
+    }
+    return box;
+  }
+
+  _toggle(label, on) {
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex; align-items:center; justify-content:space-between; gap:12px; padding: 2px 0;";
+    const cap = document.createElement("div");
+    cap.textContent = label;
+    cap.style.cssText = "font-size: 15px; color: var(--primary-text-color);";
+    const sw = document.createElement("div");
+    sw.style.cssText =
+      "width:36px; height:20px; border-radius:10px; position:relative; flex: none;" +
+      `background:${on ? "var(--primary-color)" : "var(--secondary-text-color)"};` +
+      (on ? "" : "opacity:.4;");
+    const knob = document.createElement("div");
+    knob.style.cssText =
+      "position:absolute; top:2px; width:16px; height:16px; border-radius:50%;" +
+      `background:#fff; ${on ? "right:2px" : "left:2px"};`;
+    sw.appendChild(knob);
+    row.append(cap, sw);
+    return row;
+  }
+}
+customElements.define("ha-form", HaForm);
+
+class HaCard extends HTMLElement {
+  connectedCallback() {
+    const s = this.style;
+    s.display = "block";
+    s.background = "var(--card-background-color)";
+    s.borderRadius = "var(--ha-card-border-radius, 12px)";
+    s.border = "1px solid var(--ha-card-border-color, rgba(0,0,0,0.12))";
+    s.color = "var(--primary-text-color)";
+    s.position = "relative";
+    s.overflow = "hidden";
+  }
+}
+customElements.define("ha-card", HaCard);
+</script>
+
+<!-- La vraie carte, telle que livrée. L'import est un module : la carte va
+     chercher ses traductions dans ./lang/, à côté d'elle. -->
+<script type="module">
+import "../dist/gtfs2-live-card.js";
+
+const q = new URLSearchParams(location.search);
+const page = q.get("page") || "hero";
+const dark = (q.get("mode") || "light") === "dark";
+const lang = q.get("lang") || "fr";
+document.documentElement.classList.toggle("dark", dark);
+
+const fatal = (e) => {
+  document.getElementById("fatal").textContent += "\n" + (e?.stack || e);
+};
+window.addEventListener("error", (e) => fatal(e.message));
+window.addEventListener("unhandledrejection", (e) => fatal(e.reason));
+
+/* ── Les données, telles qu'elles ont été photographiées ──────────────────
+ * data/stops.json vient du GTFS de TAO (tracés, arrêts) ; les positions et
+ * les départs viennent d'un instantané du flux temps réel. Voir data/. */
+const [network, snap, deps, ...positions] = await Promise.all([
+  fetch("data/stops.json").then((r) => r.json()),
+  fetch("data/snapshot.json").then((r) => r.json()),
+  fetch("data/departures.json").then((r) => r.json()),
+  ...["tram-a", "tram-b", "bus-40"].map((f) =>
+    fetch(`data/${f}.json`).then((r) => r.json())),
+]);
+const POS = { "tram-a": positions[0], "tram-b": positions[1], "bus-40": positions[2] };
+
+/* L'instantané est daté : rejoué tel quel, il montrerait des départs vieux de
+ * plusieurs heures, que la carte masquerait comme passés. On décale donc tout
+ * le jeu de données du même intervalle, de sorte que le premier départ tombe
+ * dans deux minutes. Les écarts entre passages, eux, sont ceux du réseau. */
+const firstDep = Math.min(...Object.values(deps).flat().map((d) => d.time));
+const SHIFT = Math.round(Date.now() / 1000) + 120 - firstDep;
+
+const iso = (epoch) => {
+  const d = new Date((epoch + SHIFT) * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+         `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+};
+
+/* Les positions sont servies telles quelles : la carte les lit par fetch,
+ * donc on intercepte pour les rendre sans toucher au réseau ni au disque. */
+const realFetch = window.fetch;
+window.fetch = (input, init) => {
+  const url = String(input?.url || input);
+  // `\w` matches the underscore, so the line name has to stop before it or
+  // "tram-a_route.json" would be read as a line called "tram-a_route"
+  const m = url.match(/([a-z0-9-]+?)(_route)?\.json(\?|$)/i);
+  if (m && POS[m[1]]) {
+    const body = m[2] ? routeGeojson(m[1]) : POS[m[1]];
+    return Promise.resolve(new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+  }
+  return realFetch(input, init);
+};
+
+/* Le fichier de tracé, au format que gtfs2 exporte : le tracé en LineString,
+ * puis un Point par arrêt. */
+function routeGeojson(file) {
+  const n = network[file];
+  return {
+    type: "FeatureCollection",
+    features: [
+      { type: "Feature", properties: {},
+        geometry: { type: "LineString", coordinates: n.shape } },
+      ...n.stops.map((s) => ({
+        type: "Feature",
+        properties: { stop_id: s.stop_id, stop_name: s.stop_name, stop_sequence: s.stop_sequence },
+        geometry: { type: "Point", coordinates: [s.lon, s.lat] },
+      })),
+    ],
+  };
+}
+
+/* ── Les capteurs, tels que gtfs2 les expose ─────────────────────────────
+ * Un capteur par ligne, avec les attributs que la carte lit vraiment : les
+ * passages théoriques, ceux du temps réel, et les retards. */
+const states = {};
+
+function sensor(file, opts = {}) {
+  const n = network[file];
+  const rows = deps[file] || [];
+  const id = `sensor.gtfs2_${file.replace("-", "_")}`;
+
+  // Le temps réel s'écarte du théorique : c'est ce décalage que la carte
+  // met en avant. L'instantané ne portait pas de retard (pris avant le
+  // premier passage), donc la page en pose de plausibles là où il en faut.
+  const late = opts.delays || [];
+  const theo = rows.map((r) => iso(r.time));
+  const real = rows.map((r, i) => iso(r.time + (late[i] ?? r.delay ?? 0)));
+
+  states[id] = {
+    entity_id: id,
+    state: theo[0] || "unavailable",
+    last_updated: new Date().toISOString(),
+    attributes: {
+      friendly_name: `${n.short_name} — ${n.reference.stop_name}`,
+      next_departures: theo,
+      next_departures_realtime: real,
+      next_delays_realtime: rows.map((r, i) => late[i] ?? r.delay ?? 0),
+      origin_station_stop_name: n.reference.stop_name,
+      // La carte coupe cette valeur sur « : » et garde la première moitié,
+      // qu'elle affiche ET apparie aux arrêts du tracé. Ce doit donc être
+      // l'identifiant, pas le nom — le nom voyage dans origin_station_stop_name.
+      origin_station_stop_id: n.reference.stop_id,
+      destination_station_stop_name: opts.destination || n.terminus,
+      route_route_short_name: n.short_name,
+      route_route_color: n.color.slice(1),
+      route_route_type: n.route_type,
+      route_route_id: n.route_id,
+      trip_direction_id: n.direction_id,
+      vehicle_positions_file: `${file}.json`,
+      gtfs_rt_updated_at: iso(Math.round(Date.parse(snap.taken_at) / 1000)),
+      ...(opts.attributes || {}),
+    },
+  };
+  return id;
+}
+
+const tramA = sensor("tram-a", { delays: [0, 62, 0, 130, 0, 0] });
+const tramB = sensor("tram-b", { delays: [45, 0, 0, 0, 190, 0] });
+const bus40 = sensor("bus-40", { delays: [0, 0, 95, 0, 0, 0] });
+
+const hass = {
+  locale: { language: lang },
+  language: lang,
+  themes: { darkMode: dark },
+  states,
+  callService() {},
+};
+
+/* ── Pages ──────────────────────────────────────────────────────────────── */
+const stage = document.getElementById("stage");
+
+// `?width=auto` laisse la scène prendre la largeur de la fenêtre, pour
+// éprouver la carte dans une colonne étroite. Les captures de la
+// documentation, elles, gardent des largeurs fixes.
+const fluide = q.get("width") === "auto";
+if (fluide) {
+  const style = document.createElement("style");
+  style.textContent = "#stage { grid-template-columns: 1fr !important; padding: 10px } .cell { width: auto !important }";
+  document.head.appendChild(style);
+}
+
+function card(config, caption, swatch, width) {
+  const cell = document.createElement("div");
+  cell.className = "cell";
+  if (width && !fluide) cell.style.width = width + "px";
+  if (caption) {
+    const cap = document.createElement("div");
+    cap.className = "caption";
+    cap.innerHTML = (swatch ? `<span class="swatch" style="background:${swatch}"></span>` : "") + caption;
+    cell.appendChild(cap);
+  }
+  const el = document.createElement("gtfs2-live-card");
+  el.setConfig({ language: lang, ...config });
+  el.hass = hass;
+  cell.appendChild(el);
+  stage.appendChild(cell);
+  return el;
+}
+
+const COLORS = Object.fromEntries(
+  Object.entries(network).map(([k, v]) => [k, v.color]));
+
+/* Déplie les sections de l'éditeur. Repliées, elles ne montrent que leur
+ * titre ; les ouvrir est ce que fait un utilisateur qui cherche un réglage,
+ * et c'est la seule façon de photographier la configuration entière.
+ *
+ * Un observateur plutôt qu'une attente : sous `--virtual-time-budget`, Chrome
+ * fait avancer les minuteries à sa main, et une boucle qui dort peut consommer
+ * tout le budget avant que le reste de la page n'ait tourné. Réagir à la
+ * mutation ne coûte, lui, aucun temps virtuel. */
+function openSections(ed) {
+  const open = () => {
+    const secs = ed.querySelectorAll("details");
+    secs.forEach((d) => { d.open = true; });
+    return secs.length >= 3;
+  };
+  if (open()) return;
+  const mo = new MutationObserver(() => { if (open()) mo.disconnect(); });
+  mo.observe(ed, { childList: true, subtree: true });
+}
+
+/* Sélectionne une ligne depuis son badge d'en-tête, comme le ferait un clic.
+ * `li` est l'indice de la ligne dans la liste `lines` de la configuration. */
+async function selectLine(el, li) {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < 60; i++) {
+    const badge = el.shadowRoot?.querySelector(`[data-action="line"][data-li="${li}"]`);
+    if (badge) {
+      badge.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+      await wait(1500);   // le temps que la carte se recadre et charge ses tuiles
+      return;
+    }
+    await wait(100);
+  }
+}
+
+/* Ouvre la bulle d'un véhicule, comme le ferait un clic dessus.
+ *
+ * Deux choses doivent arriver avant : la carte doit avoir dessiné ses
+ * marqueurs, et le véhicule doit avoir bougé une fois — la vitesse affichée
+ * se mesure entre deux positions, et une seule ne dit rien. On avance donc le
+ * véhicule de quelques dizaines de mètres le long de son tracé, on laisse la
+ * carte relire ses positions, puis on clique. */
+async function openPopup(el, file = "tram-b") {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < 60 && !el.shadowRoot?.querySelector(".bus"); i++) await wait(100);
+
+  const first = POS[file].features[0];
+  if (first) {
+    const n = network[file];
+    // avancer le long du tracé, vers le point le plus proche suivant
+    const [lon, lat] = first.geometry.coordinates;
+    let best = 0, bd = Infinity;
+    n.shape.forEach(([x, y], i) => {
+      const d = (x - lon) ** 2 + (y - lat) ** 2;
+      if (d < bd) { bd = d; best = i; }
+    });
+    const next = n.shape[Math.min(best + 2, n.shape.length - 1)];
+    first.geometry.coordinates = next;
+    await el._fetchAll(true);
+    await wait(400);
+  }
+
+  const bus = el.shadowRoot?.querySelector(`.bus`);
+  if (!bus) return;
+  bus.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+  // le suivi recadre sur le véhicule : les tuiles de ce niveau de zoom ne
+  // sont pas encore chargées, et une capture prise trop tôt montre un fond gris
+  await wait(2500);
+}
+
+try {
+  if (page === "hero") {
+    // Ce que la carte fait de mieux : les trois lignes ensemble, leurs
+    // départs fusionnés et leur tracé sur une même carte.
+    stage.style.gridTemplateColumns = "500px";
+    card({ lines: [tramA, tramB, bus40], title: "Gare d'Orléans", max_departures: 6 },
+         null, null, 500);
+  } else if (page === "lines") {
+    // Une ligne par carte : le badge prend la couleur officielle du réseau et
+    // l'icône de son mode, tram ou bus.
+    stage.style.gridTemplateColumns = "340px 340px";
+    stage.style.alignItems = "start";
+    card({ entity: tramA, max_departures: 4 }, "Tram A — Gare d'Orléans", COLORS["tram-a"], 340);
+    card({ entity: tramB, max_departures: 4 }, "Tram B — Halmagrand", COLORS["tram-b"], 340);
+    card({ entity: bus40, max_departures: 4 }, "Bus 40 — Gare d'Orléans", COLORS["bus-40"], 340);
+  } else if (page === "departures") {
+    // Le tableau seul, carte repliée : retards, passages théoriques, jours.
+    stage.style.gridTemplateColumns = "420px";
+    card({ lines: [tramA, tramB, bus40], title: "Gare d'Orléans", max_departures: 8 },
+         null, null, 420);
+  } else if (page === "map") {
+    // La carte seule, avec les véhicules de l'instantané sur leur tracé.
+    stage.style.gridTemplateColumns = "460px";
+    card({ lines: [tramA, tramB], title: "Trams A et B", max_departures: 2, map_aspect: "4/3" },
+         null, null, 460);
+  } else if (page === "editor") {
+    // L'éditeur visuel, tel qu'il apparaît dans le sélecteur de cartes : les
+    // lignes se choisissent en un seul champ, le reste se replie.
+    stage.style.gridTemplateColumns = "420px";
+    const cell = document.createElement("div");
+    cell.className = "cell";
+    cell.style.width = "420px";
+    const ed = document.createElement("gtfs2-live-card-editor");
+    cell.appendChild(ed);
+    stage.appendChild(cell);
+    ed.setConfig({ lines: [tramA, tramB, bus40], title: "Gare d'Orléans",
+                   max_departures: 6, language: lang });
+    ed.hass = hass;
+    openSections(ed);
+  } else if (page === "selected") {
+    // Un badge cliqué en en-tête sélectionne sa ligne partout à la fois :
+    // les départs ne gardent que les siens, la carte n'éclaire que son tracé,
+    // et les autres badges s'estompent. Ici, le tram B parmi les trois.
+    stage.style.gridTemplateColumns = "500px";
+    const el = card({ lines: [tramA, tramB, bus40], title: "Gare d'Orléans",
+                      max_departures: 5 }, null, null, 500);
+    selectLine(el, 1);
+  } else if (page === "popup") {
+    // Le suivi d'un véhicule : on clique sur son marqueur, la carte le suit,
+    // et la bulle dit sa ligne, son terminus, son prochain arrêt et sa
+    // vitesse. La vitesse se déduit de deux positions successives, donc la
+    // page en joue une seconde avant d'ouvrir la bulle.
+    stage.style.gridTemplateColumns = "460px";
+    const el = card({ lines: [tramA, tramB], title: "Trams A et B",
+                      max_departures: 2, map_aspect: "4/3" }, null, null, 460);
+    openPopup(el);
+  } else if (page === "narrow") {
+    // Une colonne étroite, comme un panneau latéral ou un téléphone. Chrome
+    // headless refuse une fenêtre de moins de 500 px environ, donc l'étroitesse
+    // se joue ici, sur la cellule, et non sur la fenêtre.
+    stage.style.gridTemplateColumns = "300px";
+    card({ lines: [tramA, tramB, bus40], title: "Gare d'Orléans", max_departures: 4 },
+         null, null, 300);
+  } else {
+    throw new Error(`page inconnue : ${page}`);
+  }
+} catch (err) {
+  fatal(err);
+}
+
+/* Dire au captureur quand la page est prête.
+ *
+ * Elle se construit de façon asynchrone — traductions, positions, tuiles,
+ * formulaires — et rien de tout cela n'est observable de l'extérieur. La page
+ * l'annonce donc elle-même dans `document.title`, avec la hauteur qu'elle
+ * occupe : `shots.py` la lit et photographie à cette taille, plutôt qu'à un
+ * nombre tenu à la main qui couperait la dernière carte en silence.
+ *
+ * Le signal est la stabilité, pas un état particulier : dès que le contenu
+ * attendu est là et que la hauteur ne bouge plus d'un tour à l'autre, la page
+ * est prête. Cela vaut pour la carte comme pour l'éditeur, sans avoir à
+ * décrire ce que chaque page doit contenir. */
+const ready = () => {
+  if (page === "editor") {
+    const ed = stage.querySelector("gtfs2-live-card-editor");
+    return !!ed && ed.querySelectorAll("details[open]").length >= 3;
+  }
+  const cards = [...stage.querySelectorAll("gtfs2-live-card")];
+  if (!cards.length) return false;
+  return cards.every((c) => {
+    const root = c.shadowRoot;
+    if (!root?.querySelector("ha-card")) return false;
+    if (page === "departures") return true;
+    if (!root.querySelector("svg")) return false;
+    // la page popup n'est prête que la bulle ouverte
+    if (page === "popup") {
+      const pop = root.querySelector(".map-pop");
+      return !!pop && !pop.hidden;
+    }
+    return true;
+  });
+};
+
+let lastHeight = -1, stable = 0, waited = 0;
+const poll = setInterval(() => {
+  waited += 100;
+  const h = Math.ceil(stage.getBoundingClientRect().bottom);
+  if (ready() && h === lastHeight) stable += 1; else stable = 0;
+  lastHeight = h;
+  // deux tours de suite à la même hauteur : plus rien n'arrive
+  if (stable >= 3 || waited > 15000) {
+    clearInterval(poll);
+    const r = stage.getBoundingClientRect();
+    // Seule la hauteur est mesurée. La largeur reste celle que shots.py a
+    // donnée : une page fluide s'étire à la fenêtre, et lui rendre sa propre
+    // largeur ferait tourner la mesure en rond.
+    document.title = `ready ${innerWidth}x${Math.ceil(r.bottom + 20)} — `
+      + document.title;
+  }
+}, 100);
+</script>
+</body>
+</html>

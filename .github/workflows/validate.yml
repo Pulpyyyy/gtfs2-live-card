@@ -15,3 +15,16 @@ jobs:
       - uses: hacs/action@main
         with:
           category: plugin
+
+  build:
+    name: dist matches src
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # HACS serves dist/gtfs2-live-card.js and nothing else, so a dist built
+      # from stale sources ships to every user. This also fails when a
+      # language file is missing a key that English has.
+      - run: python build.py --check

@@ -1,0 +1,18 @@
+{
+ "taken_at": "2026-08-21T02:50:01+00:00",
+ "source": "Orléans Métropole / Keolis, GTFS-RT du réseau TAO",
+ "lines": {
+  "tram-a": {
+   "vehicles": 2,
+   "departures": 6
+  },
+  "tram-b": {
+   "vehicles": 3,
+   "departures": 6
+  },
+  "bus-40": {
+   "vehicles": 0,
+   "departures": 6
+  }
+ }
+}
