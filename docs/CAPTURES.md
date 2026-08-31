@@ -75,9 +75,18 @@ positions pour servir l'instantané.
 | `lines` | une carte par ligne, badges aux couleurs du réseau |
 | `departures` | le tableau seul, retards et passages théoriques |
 | `map` | la carte seule, véhicules sur leur tracé |
+| `noposition` | une source sans temps réel : le tracé et ses arrêts, sans véhicule |
 | `selected` | une ligne choisie par son badge : départs filtrés, tracé mis en avant |
 | `popup` | un véhicule suivi, sa bulle ouverte : terminus, prochain arrêt, vitesse |
 | `narrow` | une colonne étroite, panneau latéral ou téléphone |
+| `badges` | la légende du README : chaque marque du cartouche dans son état |
+
+La page `badges` ne garde que l'entête des cartes, par une feuille injectée
+dans leur shadow root, et ne force **aucun** état par du CSS : la ligne au
+repos reçoit `next_service_in_days`, la ligne muette pointe vers un fichier de
+positions inexistant, la sélection part d'un vrai clic. Ce qui est photographié
+est donc bien ce que le code produit, et la légende ne peut pas mentir sur
+l'apparence réelle.
 
 Chaque page existe en `mode=light` et `mode=dark`, et accepte `lang=` (les cinq
 langues de la carte).

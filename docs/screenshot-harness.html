@@ -259,7 +259,10 @@ const states = {};
 function sensor(file, opts = {}) {
   const n = network[file];
   const rows = deps[file] || [];
-  const id = `sensor.gtfs2_${file.replace("-", "_")}`;
+  // `suffix` donne un identifiant distinct à partir du même instantané, ce dont
+  // la page badges a besoin : la même ligne y paraît plusieurs fois, dans des
+  // états différents, et deux états ne peuvent pas partager un capteur.
+  const id = `sensor.gtfs2_${file.replace("-", "_")}${opts.suffix ? "_" + opts.suffix : ""}`;
 
   // Le temps réel s'écarte du théorique : c'est ce décalage que la carte
   // met en avant. L'instantané ne portait pas de retard (pris avant le
@@ -277,6 +280,9 @@ function sensor(file, opts = {}) {
       next_departures: theo,
       next_departures_realtime: real,
       next_delays_realtime: rows.map((r, i) => late[i] ?? r.delay ?? 0),
+      // Durée théorique de bout en bout, plausible pour la ligne :
+      // l'instantané n'en porte pas, la page en pose comme pour les retards.
+      next_departures_durations: rows.map(() => opts.duration ?? 19),
       origin_station_stop_name: n.reference.stop_name,
       // La carte coupe cette valeur sur « : » et garde la première moitié,
       // qu'elle affiche ET apparie aux arrêts du tracé. Ce doit donc être
@@ -296,9 +302,9 @@ function sensor(file, opts = {}) {
   return id;
 }
 
-const tramA = sensor("tram-a", { delays: [0, 62, 0, 130, 0, 0] });
-const tramB = sensor("tram-b", { delays: [45, 0, 0, 0, 190, 0] });
-const bus40 = sensor("bus-40", { delays: [0, 0, 95, 0, 0, 0] });
+const tramA = sensor("tram-a", { delays: [0, 62, 0, 130, 0, 0], duration: 26 });
+const tramB = sensor("tram-b", { delays: [45, 0, 0, 0, 190, 0], duration: 24 });
+const bus40 = sensor("bus-40", { delays: [0, 0, 95, 0, 0, 0], duration: 19 });
 
 const hass = {
   locale: { language: lang },
@@ -426,15 +432,117 @@ try {
     card({ entity: tramA, max_departures: 4 }, "Tram A — Gare d'Orléans", COLORS["tram-a"], 340);
     card({ entity: tramB, max_departures: 4 }, "Tram B — Halmagrand", COLORS["tram-b"], 340);
     card({ entity: bus40, max_departures: 4 }, "Bus 40 — Gare d'Orléans", COLORS["bus-40"], 340);
+  } else if (page === "badges") {
+    /* La légende du README : chaque marque du cartouche dans son état, sur de
+     * vraies lignes et avec les vrais glyphes. Seule l'entête est gardée, le
+     * reste de la carte n'a rien à dire ici.
+     *
+     * Les états sont forcés par les données, jamais par du CSS : la ligne au
+     * repos reçoit next_service_in_days, la ligne muette pointe vers un
+     * fichier de positions qui n'existe pas, ce qui est exactement ce que
+     * voit la carte quand une source disparaît. Ce qui est photographié est
+     * donc bien ce que le code produit. */
+    stage.style.gridTemplateColumns = "300px 300px";
+    stage.style.alignItems = "start";
+
+    const only = (el) => {
+      // ne garder que l'entête, sans toucher au code : une feuille injectée
+      // dans le shadow root, ce que seul un harnais a le droit de faire.
+      // La carte construit son shadow root quand elle veut, et il n'y a pas
+      // d'évènement pour le dire : on réessaie jusqu'à ce qu'il soit là.
+      const t = setInterval(() => {
+        const root = el.shadowRoot;
+        if (!root || !root.getElementById("header")) return;
+        clearInterval(t);
+        if (root.querySelector("style[data-harness]")) return;
+        const s = document.createElement("style");
+        s.dataset.harness = "1";
+        s.textContent = "#dep-head, #dep-body, #map-head, #map-body, #footer,"
+          + " #focus-panel { display: none !important }"
+          + " .header { padding-bottom: 18px }";
+        root.appendChild(s);
+      }, 40);
+      return el;
+    };
+
+    // les trois états de repos, qui partagent la barre et se distinguent par
+    // la pastille du coin bas-gauche
+    // un capteur au repos n'a PAS de passage du jour : des listes vides,
+    // sinon la regle "un temps reel du jour retient la barre" le voit
+    const rest = sensor("bus-40", { suffix: "rest", attributes: {
+      next_departures: [], next_departures_realtime: [], next_delays_realtime: [],
+      next_service_in_days: 3, next_service_date: "2026-08-27" } });
+    states[rest].state = "unknown";
+    const restTomorrow = sensor("tram-b", { suffix: "rest1", attributes: {
+      next_departures: [], next_departures_realtime: [], next_delays_realtime: [],
+      next_service_in_days: 1, next_service_date: "2026-08-25" } });
+    states[restTomorrow].state = "unknown";
+    const restNever = sensor("tram-a", { suffix: "restx", attributes: {
+      next_departures: [], next_departures_realtime: [], next_delays_realtime: [],
+      next_service_in_days: -1 } });
+    states[restNever].state = "unknown";
+    const mute = sensor("bus-40", { suffix: "mute" });
+    const twoA = sensor("tram-a", { suffix: "sel" });
+    const twoB = sensor("tram-b", { suffix: "sel" });
+
+    only(card({ entity: tramA }, "Mode &middot; bas-droite", null, 300));
+    only(card({ entity: mute, positions_url: "data/aucun-fichier.json" },
+              "Source muette &middot; haut-gauche", null, 300));
+    // les trois marques d'alerte, haut-droite : la cause vient du flux, et
+    // sans cause c'est la marque générique qui sort, jamais un cône qui
+    // mentirait sur une grève
+    const alertPlain = sensor("tram-a", { suffix: "al", attributes: {
+      origin_stop_alert: "Arrêt non desservi ce soir" } });
+    const alertWorks = sensor("bus-40", { suffix: "alw", attributes: {
+      origin_stop_alert: "Travaux rue de la Gare", alert_cause: "CONSTRUCTION" } });
+    const alertInc = sensor("tram-b", { suffix: "ali", attributes: {
+      destination_stop_alert: "Trafic interrompu", alert_effect: "NO_SERVICE" } });
+
+    only(card({ entity: alertPlain }, "Perturbation &middot; haut-droite", null, 300));
+    only(card({ entity: alertWorks }, "Travaux &middot; c&ocirc;ne", null, 300));
+    only(card({ entity: alertInc }, "Service interrompu &middot; &eacute;clair", null, 300));
+    only(card({ entity: restTomorrow }, "Reprend demain &middot; barre et horloge", null, 300));
+    only(card({ entity: rest }, "Reprend dans 3 jours &middot; barre et calendrier", null, 300));
+    only(card({ entity: restNever }, "Aucun service &middot; barre et croix", null, 300));
+    // le pire cas, celui qu'aucune capture ne montrait : quatre pastilles et
+    // le trait sur un seul cartouche. Le repos éteint la marque muette d'un
+    // fichier figé (ce silence-là est attendu), donc les quatre ne coexistent
+    // que si l'entité est réellement indisponible.
+    const everything = sensor("tram-a", { suffix: "all", attributes: {
+      next_departures: [], next_departures_realtime: [], next_delays_realtime: [],
+      origin_stop_alert: "Travaux, arrêt déplacé", alert_cause: "CONSTRUCTION",
+      next_service_in_days: 2, next_service_date: "2026-08-26" } });
+    states[everything].state = "unavailable";
+    only(card({ entity: everything, positions_url: "data/aucun-fichier.json" },
+              "Tout &agrave; la fois &middot; quatre pastilles et le trait", null, 300));
+
+    const pair = only(card({ lines: [twoA, twoB] }, "S&eacute;lection &middot; anneau et att&eacute;nuation", null, 300));
+    // sélectionner la première ligne : c'est un clic, comme pour un lecteur
+    setTimeout(() => {
+      const b = pair.shadowRoot?.querySelector(".badge.clickable");
+      if (b) b.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+    }, 400);
   } else if (page === "departures") {
     // Le tableau seul, carte repliée : retards, passages théoriques, jours.
     stage.style.gridTemplateColumns = "420px";
-    card({ lines: [tramA, tramB, bus40], title: "Gare d'Orléans", max_departures: 8 },
+    card({ lines: [tramA, tramB, bus40], title: "Gare d'Orléans", max_departures: 8, show_duration: true },
          null, null, 420);
   } else if (page === "map") {
     // La carte seule, avec les véhicules de l'instantané sur leur tracé.
     stage.style.gridTemplateColumns = "460px";
     card({ lines: [tramA, tramB], title: "Trams A et B", max_departures: 2, map_aspect: "4/3" },
+         null, null, 460);
+  } else if (page === "noposition") {
+    // Une source sans positions temps réel : le capteur n'annonce aucun
+    // fichier de positions, seulement son tracé. La carte ne va donc chercher
+    // aucun fichier de positions (pas de 404 à répétition) et dessine quand
+    // même le trajet, ses arrêts et la station d'origine.
+    stage.style.gridTemplateColumns = "460px";
+    const tramSansRt = sensor("tram-a", {
+      suffix: "sansrt",
+      attributes: { vehicle_positions_file: undefined, route_geojson_file: "tram-a_route.json" },
+    });
+    card({ entity: tramSansRt, title: "Tram A, horaires seuls", max_departures: 2, map_aspect: "4/3" },
          null, null, 460);
   } else if (page === "editor") {
     // L'éditeur visuel, tel qu'il apparaît dans le sélecteur de cartes : les
@@ -467,6 +575,23 @@ try {
     const el = card({ lines: [tramA, tramB], title: "Trams A et B",
                       max_departures: 2, map_aspect: "4/3" }, null, null, 460);
     openPopup(el);
+  } else if (page === "entete12") {
+    // l'entête chargée, à trois tailles : les rangées naissent du contenu
+    // (5 = 4+1, 12 = 3 pleines, 13 = une rangée de plus), jamais de rangée
+    // vide, et la zone de texte occupe le cadre restant, pleine hauteur.
+    stage.style.gridTemplateColumns = "560px";
+    const pool = [tramA, tramB, bus40,
+      ...Array.from({ length: 10 }, (_, i) =>
+        sensor(["bus-40", "tram-a", "tram-b"][i % 3], { suffix: "e" + i }))];
+    for (const n of [5, 12, 13]) {
+      const el = card({ lines: pool.slice(0, n), max_departures: 2 },
+        `${n} cartouches`, null, 560);
+      selectLine(el, 0);
+    }
+    // sans sélection ni titre il n'y a pas de zone de texte : le plafond de
+    // quatre colonnes tombe et les cartouches reprennent toute la largeur
+    card({ lines: pool.slice(0, 9), max_departures: 2 },
+      "9 cartouches, rien de sélectionné : toute la largeur", null, 560);
   } else if (page === "narrow") {
     // Une colonne étroite, comme un panneau latéral ou un téléphone. Chrome
     // headless refuse une fenêtre de moins de 500 px environ, donc l'étroitesse
@@ -500,6 +625,13 @@ const ready = () => {
   }
   const cards = [...stage.querySelectorAll("gtfs2-live-card")];
   if (!cards.length) return false;
+  if (page === "badges") {
+    // la page ne vaut que si les états qu'elle illustre sont bien là : la
+    // pastille muette attend l'échec du fetch, l'anneau attend le clic
+    const has = (sel) => cards.some((c) => c.shadowRoot?.querySelector(sel));
+    return cards.every((c) => c.shadowRoot?.querySelector(".badge"))
+      && has(".badge-pip.mute") && has(".badge-slash") && has(".badge.sel");
+  }
   return cards.every((c) => {
     const root = c.shadowRoot;
     if (!root?.querySelector("ha-card")) return false;

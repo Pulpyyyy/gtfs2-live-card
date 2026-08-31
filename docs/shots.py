@@ -38,6 +38,9 @@ PAGES = {
     "lines":      (740, 560),   # one card per line, side by side
     "departures": (470, 780),   # the board alone, map collapsed
     "map":        (520, 620),   # the map alone, vehicles on their shapes
+    "noposition": (520, 620),   # a source with no realtime: route drawn anyway
+    "entete12":   (560, 760),   # twelve badges, one selected: the full-height text zone
+    "badges":     (620, 320),   # the badge marks, one per state, README legend
     "selected":   (540, 900),   # one line picked from its header badge
     "popup":      (520, 640),   # one vehicle tracked, its bubble open
     # Chrome headless will not open a window narrower than ~500 px, so the
