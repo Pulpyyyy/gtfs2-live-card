@@ -3154,7 +3154,7 @@ class Gtfs2LiveCard extends HTMLElement {
         .board-next { padding: 10px 16px 4px; font-size: 13px; color: var(--secondary-text-color); }
         .board-next b { color: var(--primary-text-color); }
         .board-next .countdown { font-size: 13px; }
-        .board-wrap { overflow-x: auto; }
+        .board-wrap { overflow-x: auto; container-type: inline-size; }
         .board { width: 100%; border-collapse: collapse; font-size: 13px; }
         .board th { text-align: left; font-size: 12px; font-weight: 600; color: var(--secondary-text-color); padding: 8px 12px 6px; }
         .board td { padding: 7px 12px; border-top: 1px solid var(--divider-color); white-space: nowrap; }
@@ -3178,6 +3178,18 @@ class Gtfs2LiveCard extends HTMLElement {
         .board .st-early { color: #0369a1; }
         .board .st-ok { color: var(--gtfs2-ontime-color, #2e7d32); }
         .board .st-none { color: var(--secondary-text-color); }
+        /* A board in a sections column has no width to spare, and a single
+           arrival crossing midnight is enough to spend it: that row alone
+           carries a "tomorrow" chip, every column is sized on its widest
+           cell, and the line badge ends up behind a scrollbar. Narrow, the
+           padding gives its slack back to the columns rather than to the
+           reader's mouse. Wide, nothing changes. */
+        @container (max-width: 480px) {
+            .board th { padding-left: 8px; padding-right: 8px; }
+            .board td { padding-left: 8px; padding-right: 8px; }
+            .board th:first-child, .board td:first-child { padding-left: 12px; }
+            .board th:last-child, .board td:last-child { padding-right: 12px; }
+        }
         .info-strip { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--divider-color); }
         .info-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 8px; font-size: 11px; background: rgba(127,127,127,.12); color: var(--secondary-text-color); }
         .info-chip svg { flex: none; }
