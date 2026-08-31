@@ -8,7 +8,7 @@ A Lovelace card for the [gtfs2](https://github.com/vingerha/gtfs2) Home Assistan
 
 ## Features
 
-- **Departures board**: scheduled and realtime times merged from one or several gtfs2 start/stop sensors, delay chips (on time, +n min), day tags for departures beyond today, stop alerts, colored line badges with destination on every row.
+- **Departures board**: scheduled and realtime times merged from one or several gtfs2 start/stop sensors, delay chips (on time, +n min), day tags for departures beyond today, stop alerts, colored line badges with destination on every row, and an optional arrival-and-journey-time line per departure (`show_duration`).
 - **Line map**: CARTO/OSM tiles following the HA theme (light/dark), route shapes with direction arrows, ordered stops that name themselves once the view is tight enough, origin station pin, and realtime vehicle positions carrying their transport-mode icon with a heading arrow orbiting the marker. Marker size follows the zoom, so a whole-network view stays readable where a dozen vehicles would otherwise clot together. Hovering or tapping a stop names it and lists the other configured lines calling there, and stays quiet when the map already shows the name in full.
 - **Vehicle tracking**: click a vehicle to follow it: animated zoom, passed route dashed in grey, upcoming route in the line color, named next stop, estimated speed in a popup anchored to the marker. The view glides with the vehicle on every refresh and returns to the fitted view with a hint when the vehicle leaves the feed.
 - **Line highlight**: click a line badge to raise that line above the others, filter the departures board and show its origin pin; the header shows the full direction (origin → destination).
@@ -81,6 +81,9 @@ lines:
 | `max_departures` | no | Rows on the departures board (default 4). |
 | `refresh` | no | Map polling period in seconds (min 15, default 60). |
 | `mode_icons` | no | Transport-mode chip (mdi icon from the sensor) on the line badges (default `true`). |
+| `show_duration` | no | Arrival time and journey duration on each departure row (“Théorique 06:03 → 07:07 (1 h 04)”), from the gtfs2 duration attribute or derived from the paired arrival times (default `false`). |
+| `show_departures` | no | The departures pane, header included (default `true`): `false` makes a map-only card. |
+| `show_map` | no | The map pane, header included (default `true`): `false` makes a departures-only card. |
 | `language` | no | `auto` (HA locale), or `en`, `fr`, `de`, `es`, `pt`. |
 | `map_style` | no | `auto` (HA theme), `light`, `dark`, or a custom `{z}/{x}/{y}` tile URL template. |
 | `map_aspect` | no | Map aspect ratio, e.g. `"4/3"` (default `2/1`, switching to `4/3` under 380 px). |

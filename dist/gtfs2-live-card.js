@@ -34,10 +34,16 @@ const DEFAULTS = {
     line: null,
     line_color: "#0072bc",
     station_color: null,      // default: HA accent color
-    positions_url: null,
-    route_url: null,          // default: positions_url with ".json" → "_route.json"
+    positions_url: null,      // optional: realtime is not required for the map
+    route_url: null,          // default: route_geojson_file, else positions_url with "_route.json"
     lines: null,              // list of entity_ids and/or {entity?, positions_url?, route_url?, line?, color?}
     mode_icons: true,         // mode chip (mdi) on the line badges
+    show_duration: false,     // theoretical journey time on each departure row
+    // A pane can be COLLAPSED, which the card remembers per user, or hidden
+    // outright, which is the dashboard's decision and sticks for everyone:
+    // a departures-only card in a column, a map-only card next to it.
+    show_departures: true,    // the departures pane, its header included
+    show_map: true,           // the map pane, its header included
     map_style: "auto",        // auto | light | dark | custom template with {z}/{x}/{y}
     map_aspect: null,         // e.g. "4/3", overrides the responsive default
     language: "auto",         // auto (HA locale) | en | fr | de | es | pt
@@ -51,7 +57,51 @@ const WORLD = 1 << 28;        // Web-Mercator world size, in "world units"
 const EARTH_CIRC = 40075016.686;
 const HIST_MAX = 30;
 const HIST_TTL = 15 * 60000;  // forget vehicles gone from the feed this long
-const STALE_FEED = 8 * 60000;  // a feed not refreshed this long = ghost buses (end of service)
+const STALE_FEED = 8 * 60000;  // a positions file not rewritten this long = the source has gone quiet
+
+// One geometry for every corner mark a badge can carry, because a badge can
+// carry four of them and marks of different sizes in different corners would
+// read as an accident. Only the contents and the colour change.
+//
+// 28 / 7 / 14 is the largest that clears the number. The dimensioning label is
+// NOT the longest one: the badge is a fixed 60 square and the number shrinks to
+// fit its 40 usable pixels, so "999B" drops to 17px and its short ink clears
+// the corners easily. "40" keeps its full 28px and decides, with 0.7px to
+// spare. The gap has to be twice the overhang: with four corners in use, one
+// badge's right-hand pip faces the next badge's left-hand pip.
+const PIP = 28;                // diameter
+// Ink radius: the disc less an optical ring. 1px was the geometric maximum and
+// looked wrong - a glyph whose furthest point is a long edge rather than a
+// spike (the cable bar, the funicular diagonal, the tram body) reads as
+// bursting out of its disc. 2.5px is where every glyph in the set stops
+// touching; past 3px they start looking a size too small again.
+const PIP_INK = PIP / 2 - 2.5;
+const PIP_GAP = 14;            // between badges, = 2 x the 7px overhang
+// the narrowest the header's text zone is allowed to get before it stops
+// sharing a row with the badges and takes one of its own
+const TITLES_MIN = 96;
+
+const BADGE_W = 60, BADGE_PAD = 10, BADGE_FS = 28;
+const BADGE_FS_MIN = 11;
+
+// Font size the number takes so it fits the badge without the badge moving.
+// Measured against the real family rather than counted in characters: a per
+// character estimate holds for digits, which all share one advance, and comes
+// apart on letters - "WWW" is half again as wide as "111" at the same size.
+// Falls back on the full size if the canvas is unavailable, in which case the
+// badge clips rather than growing, which is still the lesser wrong.
+const _fitCtx = (() => {
+    try { return document.createElement("canvas").getContext("2d"); }
+    catch (e) { return null; }
+})();
+const badgeFontSize = (label, family) => {
+    const usable = BADGE_W - 2 * BADGE_PAD;
+    if (!_fitCtx || !label) return BADGE_FS;
+    _fitCtx.font = `700 ${BADGE_FS}px ${family || "Roboto, sans-serif"}`;
+    const w = _fitCtx.measureText(String(label)).width;
+    if (!w || w <= usable) return BADGE_FS;
+    return Math.max(BADGE_FS_MIN, Math.floor(BADGE_FS * usable / w * 10) / 10);
+};
 const LABEL_SPAN = 3000;      // stop names label themselves under this map width (metres)
 const MARKER_SPAN_MIN = 600;  // at or under this map width, vehicle markers are full size
 const MARKER_SPAN_MAX = 12000;// at or over it, they sit at their smallest
@@ -154,70 +204,173 @@ const modeKey = (rt) => {
     if (!isNaN(n)) {
         if (n === 0 || n === 5 || (n >= 900 && n < 1000)) return "tram";
         if (n === 1 || (n >= 400 && n < 500)) return "metro";
-        if (n === 2 || (n >= 100 && n < 300)) return "train";
-        if (n === 3 || (n >= 700 && n < 800)) return "bus";
-        if (n === 4 || n === 1200) return "ferry";
+        if (n === 2 || (n >= 100 && n < 200)) return "train";
+        // 200 to 209 is Coach Service in the GTFS extended types: a long
+        // distance bus, not a train. It rode along as a train for as long as
+        // the two glyphs were the same rounded box.
+        if (n === 3 || (n >= 200 && n < 300) || (n >= 700 && n < 800)) return "bus";
+        if (n === 4 || n === 1000 || n === 1200 || n === 1502) return "ferry";   // 1000 is water transport, 1502 a water taxi
         if (n === 11 || n === 800) return "trolleybus";
         if (n === 6 || n === 1300) return "cable";
         if (n === 7 || n === 1400) return "funicular";
         if (n === 12) return "monorail";
+        if (n === 1100) return "air";
+        if (n >= 1500 && n < 1600) return "taxi";
+        if (n >= 1700 && n < 1800) return "vehicle";   // "miscellaneous", the codes that name nothing
         return "bus";
     }
     const s = String(rt || "").toLowerCase();
-    for (const k of ["tram", "metro", "train", "ferry", "trolleybus", "funicular", "monorail"]) if (s.includes(k)) return k;
+    for (const k of ["tram", "metro", "train", "ferry", "trolleybus", "funicular", "monorail", "taxi"]) if (s.includes(k)) return k;
     if (s.includes("métro")) return "metro";
     if (s.includes("rail")) return "train";
     return "bus";
 };
 
 
-// mdi glyph outlines (24x24 grid) for the map markers: ha-icon is an HTML
-// element and cannot live inside the map SVG, so the modes we know about
-// carry their path here. An unknown mode falls back to the plain arrow.
-// One glyph table for the whole card: these are the official mdi outlines
-// (24x24 grid) behind mdi:bus, mdi:tram and friends. The map SVG cannot host
-// an <ha-icon> HTML element, so the badges draw from this same table rather
-// than from ha-icon, and a mode looks identical wherever it shows up.
-const MDI_PATHS = {
-    bus: "M18,11H6V6H18M16.5,17A1.5,1.5 0 0,1 15,15.5A1.5,1.5 0 0,1 16.5,14A1.5,1.5 0 0,1 18,15.5A1.5,1.5 0 0,1 16.5,17M7.5,17A1.5,1.5 0 0,1 6,15.5A1.5,1.5 0 0,1 7.5,14A1.5,1.5 0 0,1 9,15.5A1.5,1.5 0 0,1 7.5,17M4,16C4,16.88 4.39,17.67 5,18.22V20A1,1 0 0,0 6,21H7A1,1 0 0,0 8,20V19H16V20A1,1 0 0,0 17,21H18A1,1 0 0,0 19,20V18.22C19.61,17.67 20,16.88 20,16V6C20,2.5 16.42,2 12,2C7.58,2 4,2.5 4,6V16Z",
-    trolleybus: "M18 8H6V4H18M16.5 14C15.7 14 15 13.3 15 12.5C15 11.7 15.7 11 16.5 11C17.3 11 18 11.7 18 12.5C18 13.3 17.3 14 16.5 14M7.5 14C6.7 14 6 13.3 6 12.5C6 11.7 6.7 11 7.5 11S9 11.7 9 12.5C9 13.3 8.3 14 7.5 14M4 13C4 13.9 4.4 14.7 5 15.2V17C5 17.6 5.4 18 6 18H7C7.6 18 8 17.6 8 17V16H16V17C16 17.6 16.4 18 17 18H18C18.6 18 19 17.6 19 17V15.2C19.6 14.7 20 13.9 20 13V4C20 .5 16.4 0 12 0S4 .5 4 4V13M7 21H11V19L17 22H13V24L7 21Z",
-    tram: "M19,16.94V8.5C19,5.71 16.39,5.1 13,5L13.75,3.5H17V2H7V3.5H11.75L11,5C7.86,5.11 5,5.73 5,8.5V16.94C5,18.39 6.19,19.6 7.59,19.91L6,21.5V22H8.23L10.23,20H14L16,22H18V21.5L16.5,20H16.42C18.11,20 19,18.63 19,16.94M12,18.5A1.5,1.5 0 0,1 10.5,17A1.5,1.5 0 0,1 12,15.5A1.5,1.5 0 0,1 13.5,17A1.5,1.5 0 0,1 12,18.5M17,14H7V9H17V14Z",
-    metro: "M18,11H13V6H18M16.5,17A1.5,1.5 0 0,1 15,15.5A1.5,1.5 0 0,1 16.5,14A1.5,1.5 0 0,1 18,15.5A1.5,1.5 0 0,1 16.5,17M11,11H6V6H11M7.5,17A1.5,1.5 0 0,1 6,15.5A1.5,1.5 0 0,1 7.5,14A1.5,1.5 0 0,1 9,15.5A1.5,1.5 0 0,1 7.5,17M12,2C7.58,2 4,2.5 4,6V15.5A3.5,3.5 0 0,0 7.5,19L6,20.5V21H18V20.5L16.5,19A3.5,3.5 0 0,0 20,15.5V6C20,2.5 16.42,2 12,2Z",
-    train: "M12,2C8,2 4,2.5 4,6V15.5A3.5,3.5 0 0,0 7.5,19L6,20.5V21H8.23L10.23,19H14L16,21H18V20.5L16.5,19A3.5,3.5 0 0,0 20,15.5V6C20,2.5 16.42,2 12,2M7.5,17A1.5,1.5 0 0,1 6,15.5A1.5,1.5 0 0,1 7.5,14A1.5,1.5 0 0,1 9,15.5A1.5,1.5 0 0,1 7.5,17M11,10H6V6H11V10M13,10V6H18V10H13M16.5,17A1.5,1.5 0 0,1 15,15.5A1.5,1.5 0 0,1 16.5,14A1.5,1.5 0 0,1 18,15.5A1.5,1.5 0 0,1 16.5,17Z",
-    ferry: "M6,6H18V9.96L12,8L6,9.96M3.94,19H4C5.6,19 7,18.12 8,17C9,18.12 10.4,19 12,19C13.6,19 15,18.12 16,17C17,18.12 18.4,19 20,19H20.05L21.95,12.31C22.03,12.06 22,11.78 21.89,11.54C21.76,11.3 21.55,11.12 21.29,11.04L20,10.62V6C20,4.89 19.1,4 18,4H15V1H9V4H6A2,2 0 0,0 4,6V10.62L2.71,11.04C2.45,11.12 2.24,11.3 2.11,11.54C2,11.78 1.97,12.06 2.05,12.31M20,21C18.61,21 17.22,20.53 16,19.67C13.56,21.38 10.44,21.38 8,19.67C6.78,20.53 5.39,21 4,21H2V23H4C5.37,23 6.74,22.65 8,22C10.5,23.3 13.5,23.3 16,22C17.26,22.65 18.62,23 20,23H22V21H20Z",
-    cable: "M18,10H13V7.59L22.12,6.07L21.88,4.59L16.41,5.5C16.46,5.35 16.5,5.18 16.5,5A1.5,1.5 0 0,0 15,3.5A1.5,1.5 0 0,0 13.5,5C13.5,5.35 13.63,5.68 13.84,5.93L13,6.07V5H11V6.41L10.41,6.5C10.46,6.35 10.5,6.18 10.5,6A1.5,1.5 0 0,0 9,4.5A1.5,1.5 0 0,0 7.5,6C7.5,6.36 7.63,6.68 7.83,6.93L1.88,7.93L2.12,9.41L11,7.93V10H6C4.89,10 4,10.9 4,12V18A2,2 0 0,0 6,20H18A2,2 0 0,0 20,18V12A2,2 0 0,0 18,10M6,12H8.25V16H6V12M9.75,16V12H14.25V16H9.75M18,16H15.75V12H18V16Z",
-    funicular: "M15 6H22V9H18V13H14V17H10V21H3V18H7V14H11V10H15V6M10.17 6.66L4.66 12.17L2.83 10.34L8.34 4.83L6.5 3H12V8.5L10.17 6.66Z",
-    monorail: "M18,10H6V5H18M12,17C10.89,17 10,16.1 10,15C10,13.89 10.89,13 12,13A2,2 0 0,1 14,15A2,2 0 0,1 12,17M4,15.5A3.5,3.5 0 0,0 7.5,19L6,20.5V21H18V20.5L16.5,19A3.5,3.5 0 0,0 20,15.5V5C20,1.5 16.42,1 12,1C7.58,1 4,1.5 4,5V15.5Z",
-    vehicle: "M18,11H6V6H18M16.5,17A1.5,1.5 0 0,1 15,15.5A1.5,1.5 0 0,1 16.5,14A1.5,1.5 0 0,1 18,15.5A1.5,1.5 0 0,1 16.5,17M7.5,17A1.5,1.5 0 0,1 6,15.5A1.5,1.5 0 0,1 7.5,14A1.5,1.5 0 0,1 9,15.5A1.5,1.5 0 0,1 7.5,17M4,16C4,16.88 4.39,17.67 5,18.22V20A1,1 0 0,0 6,21H7A1,1 0 0,0 8,20V19H16V20A1,1 0 0,0 17,21H18A1,1 0 0,0 19,20V18.22C19.61,17.67 20,16.88 20,16V6C20,2.5 16.42,2 12,2C7.58,2 4,2.5 4,6V16Z",
+// One glyph table for the whole card, drawn for this card rather than taken
+// from mdi. mdi draws bus, metro, train and monorail as the same rounded box
+// with two windows: legible at 24px, a single blob at the 10px an unfocused
+// map marker gets. Here each mode carries its signature on its silhouette,
+// where low resolution cannot rub it out: a pantograph over the tram, a beam
+// under the monorail, a tunnel arch for the metro, two coupled cars for the
+// train. No glyph has a counter either. Window bands are gaps of at least two
+// grid units between solid masses, so they close cleanly as the glyph shrinks
+// instead of filling in and turning the whole thing grey.
+//
+// Rendered at 10px, the closest pair of the set sits at 0.21 of average pixel
+// distance; the mdi outlines it replaces sat at 0.06 (metro against train),
+// and mdi:bus was byte for byte the same path as the fallback vehicle.
+//
+// The map SVG cannot host an <ha-icon> HTML element, so the badges draw from
+// this same table rather than from ha-icon, and a mode looks identical
+// wherever it shows up.
+const GLYPH_PATHS = {
+    bus: "M4.6 6H19.4A1.6 1.6 0 0 1 21 7.6V9.4H3V7.6A1.6 1.6 0 0 1 4.6 6ZM3 11.4H21V15.6A1.6 1.6 0 0 1 19.4 17.2H4.6A1.6 1.6 0 0 1 3 15.6ZM5 17.4A2.4 2.4 0 0 0 9.8 17.4A2.4 2.4 0 0 0 5 17.4ZM14.2 17.4A2.4 2.4 0 0 0 19 17.4A2.4 2.4 0 0 0 14.2 17.4Z",
+    trolleybus: "M3.2 1.6H20.8A1.2 1.2 0 0 1 20.8 4H3.2A1.2 1.2 0 0 1 3.2 1.6ZM13.4 8.2H16L9.4 4H6.8ZM4.6 8H19.4A1.6 1.6 0 0 1 21 9.6V11.4H3V9.6A1.6 1.6 0 0 1 4.6 8ZM3 13.4H21V17.4A1.6 1.6 0 0 1 19.4 19H4.6A1.6 1.6 0 0 1 3 17.4ZM5.2 19.2A2.2 2.2 0 0 0 9.6 19.2A2.2 2.2 0 0 0 5.2 19.2ZM14.4 19.2A2.2 2.2 0 0 0 18.8 19.2A2.2 2.2 0 0 0 14.4 19.2Z",
+    tram: "M12 2.4L16.6 5.2L12 7.4L7.4 5.2ZM8.2 6.6H15.8A1.6 1.6 0 0 1 17.4 8.2V10.4H6.6V8.2A1.6 1.6 0 0 1 8.2 6.6ZM6.6 12.4H17.4V17.4A1.4 1.4 0 0 1 16 18.8H8A1.4 1.4 0 0 1 6.6 17.4Z",
+    metro: "M3 21V13A9 9 0 0 1 21 13V21H17V13A5 5 0 0 0 7 13V21ZM10.6 14H13.4A1.6 1.6 0 0 1 15 15.6V21H9V15.6A1.6 1.6 0 0 1 10.6 14Z",
+    train: "M3.2 7.6H11V10.4H2V8.8A1.2 1.2 0 0 1 3.2 7.6ZM2 12.4H11V16.4H3.2A1.2 1.2 0 0 1 2 15.2ZM12.4 7.6H18.8L21.2 10.4H12.4ZM12.4 12.4H22V15.2A1.2 1.2 0 0 1 20.8 16.4H12.4Z",
+    monorail: "M9 3.6H15A3.6 3.6 0 0 1 18.6 7.2V7.6H5.4V7.2A3.6 3.6 0 0 1 9 3.6ZM5.4 9.6H18.6V14.4A1.2 1.2 0 0 1 17.4 15.6H6.6A1.2 1.2 0 0 1 5.4 14.4ZM3.2 16.8H20.8A1.4 1.4 0 0 1 22.2 18.2V18.8A1.4 1.4 0 0 1 20.8 20.2H3.2A1.4 1.4 0 0 1 1.8 18.8V18.2A1.4 1.4 0 0 1 3.2 16.8Z",
+    ferry: "M2.4 13.6H21.6L18.8 20.4H5.2ZM9 7.6H15A1.4 1.4 0 0 1 16.4 9V11.6H7.6V9A1.4 1.4 0 0 1 9 7.6ZM11.2 3.8H12.8V7.6H11.2Z",
+    cable: "M1.8 3.6L22.2 7.8L21.8 9.6L1.4 5.4ZM11.2 6.2H12.8V11.6H11.2ZM9.6 10.6H14.4A3.6 3.6 0 0 1 18 14.2V16.8A3.6 3.6 0 0 1 14.4 20.4H9.6A3.6 3.6 0 0 1 6 16.8V14.2A3.6 3.6 0 0 1 9.6 10.6Z",
+    funicular: "M2.4 19.6L20.4 6.4V9.2L2.4 22.4ZM7.1 14.8L14.4 9.5L10.8 4.6L3.6 9.9Z",
+    vehicle: "M12 3.2L20.6 21.6L12 18L3.4 21.6Z",
+    taxi: "M8.2 3H15.8A1.2 1.2 0 0 1 17 4.2V6.6H7V4.2A1.2 1.2 0 0 1 8.2 3ZM8.4 8.6H15.6L19 12.8H5ZM3.4 12.8H20.6A1.4 1.4 0 0 1 22 14.2V16.6A1.4 1.4 0 0 1 20.6 18H3.4A1.4 1.4 0 0 1 2 16.6V14.2A1.4 1.4 0 0 1 3.4 12.8ZM4.9 18.2A2.2 2.2 0 0 0 9.3 18.2A2.2 2.2 0 0 0 4.9 18.2ZM14.7 18.2A2.2 2.2 0 0 0 19.1 18.2A2.2 2.2 0 0 0 14.7 18.2Z",
+    air: "M12 2A2 2 0 0 1 14 4V9.2L22 14V16.6L14 14.2V19.2L16.8 21.2V22.8L12 21.4L7.2 22.8V21.2L10 19.2V14.2L2 16.6V14L10 9.2V4A2 2 0 0 1 12 2Z",
+    // Not a mode: the state of a source that has stopped reporting. Drawn to
+    // the same rules as the modes so it can share their geometry - two solid
+    // masses, no counter, a 4.5 unit gap that stays open as the glyph shrinks.
+    // On the axis opposite the resting stroke, which runs "/": two marks that
+    // mean different things must not rhyme.
+    mute: "M2.97 6.23 L8.77 12.03 L12.03 8.77 L6.23 2.97ZM11.97 15.23 L17.77 21.03 L21.03 17.77 L15.23 11.97Z",
+    // Not modes either: when a line that is not running today runs again.
+    // Three silhouettes, round / square with tabs / cross, because a
+    // silhouette is what survives shrinking - counting masses does not.
+    //
+    // tomorrow: a filled dial with an open quadrant. Hands would be thin
+    // strokes and a rim would be a counter; both close up at this size.
+    // days: page, header band and tabs. The 2.6 unit gap between band and
+    // page is what holds it away from the vehicle glyphs, which are rounded
+    // rectangles too and whose masses touch.
+    // never: solid at the centre, which is what separates it from `mute`
+    // (two masses with a gap) and from the resting stroke (one thin diagonal
+    // across the whole badge).
+    tomorrow: "M12 12L12 2.4A9.6 9.6 0 1 0 18.79 18.79Z",
+    days: "M7 2.2H9.4V6.8H7ZM14.6 2.2H17V6.8H14.6ZM5.2 5.2H18.8A1.6 1.6 0 0 1 20.4 6.8V9H3.6V6.8A1.6 1.6 0 0 1 5.2 5.2ZM3.6 11.6H20.4V19.8A1.6 1.6 0 0 1 18.8 21.4H5.2A1.6 1.6 0 0 1 3.6 19.8Z",
+    never: "M2.8 5.2L18.8 21.2L21.2 18.8L5.2 2.8ZM18.8 2.8L2.8 18.8L5.2 21.2L21.2 5.2Z",
+    // Nor are these: what the operator says is going on, top-right corner.
+    // Only `alert` is drawn from a sentence; the other two need gtfs2 to
+    // publish the alert's GTFS-RT cause, so a network that never fills it in
+    // always gets the generic mark and never a cone that would be a lie.
+    //
+    // alert: an exclamation, upright, no diagonal anywhere, so it cannot rhyme
+    // with the quiet-source bars or the resting stroke.
+    // incident: a bolt, one mass.
+    // works: a cone, its stripe left as an open gap rather than a counter, and
+    // its foot merged into the body so the shape survives at 23 px.
+    alert: "M9.7 2.8H14.3L13.5 15.6H10.5ZM9.5 19.4A2.5 2.5 0 1 0 14.5 19.4A2.5 2.5 0 1 0 9.5 19.4Z",
+    incident: "M13.8 2.2L5.2 13.6H10.4L9.2 21.8L18.6 10.0H13.0Z",
+    works: "M10.4 3.0H13.6L15.6 10.2H8.4ZM7.7 13.4H16.3L17.6 18.0H19.6V21.6H4.4V18.0H6.4Z",
 };
 
-// the icon name each mode is known by, kept in step with MDI_PATHS so the
-// badge and the map marker of one mode can never drift apart
-const MDI_BY_MODE = {
-    bus: "mdi:bus", tram: "mdi:tram", metro: "mdi:subway-variant", train: "mdi:train",
-    ferry: "mdi:ferry", trolleybus: "mdi:bus-electric", cable: "mdi:gondola",
-    funicular: "mdi:stairs-up", monorail: "mdi:train-variant", vehicle: "mdi:bus",
+// the mdi icons that merely restate a mode, first one canonical. The card
+// does not draw from these any more, but it still needs to tell an icon the
+// integration picked for a route_type from one a user really chose: only the
+// second is a decision, and only it deserves to override the mode glyph. One
+// name per mode was not enough: the integration emits up to four of them for
+// a single mode, which is how 34 route types out of 82 kept rendering an mdi
+// outline instead of the glyph they were entitled to.
+const MDI_DEFAULTS = {
+    bus: ["mdi:bus", "mdi:bus-school"],
+    trolleybus: ["mdi:bus-electric", "mdi:bus"],
+    tram: ["mdi:tram", "mdi:train-variant"],
+    metro: ["mdi:subway-variant", "mdi:subway"],
+    train: ["mdi:train", "mdi:train-car", "mdi:train-variant"],
+    monorail: ["mdi:train-variant"],
+    ferry: ["mdi:ferry"],
+    cable: ["mdi:gondola"],
+    funicular: ["mdi:stairs-up", "mdi:stairs"],
+    taxi: ["mdi:taxi", "mdi:train-variant", "mdi:bicycle-basket", "mdi:car-multiple"],
+    air: ["mdi:airplane"],
+    vehicle: ["mdi:bus", "mdi:train-car", "mdi:horse-variant"],
 };
 
-// ink box of each outline inside the 24-unit grid, as [x, y, w, h], measured
-// with getBBox. mdi outlines leave up to a third of the grid empty, so scaling
-// the grid makes every glyph look a size too small and the modes look uneven.
-const MDI_BOX = {
-    bus: [4, 2, 16, 19], trolleybus: [4, 0, 16, 24], tram: [5, 2, 14, 20],
-    metro: [4, 2, 16, 19], train: [4, 2, 16, 19], ferry: [2, 1, 20, 22],
-    cable: [1.88, 3.5, 20.24, 16.5], funicular: [2.83, 3, 19.17, 18],
-    monorail: [4, 1, 16, 20], vehicle: [4, 2, 16, 19],
+// Centre of the ink and the distance from it to the furthest painted point,
+// per glyph, in the 24-unit grid: [cx, cy, r].
+//
+// A box was the wrong shape to measure with. Fitting the longest SIDE of the
+// box to the disc inscribes the glyph in a square, and a square inside a
+// circle leaves the four corners of the disc unused - measured on this set,
+// between nothing and 27% of the glyph's size thrown away, the flatter the
+// glyph the more. A radius says how far the drawing actually reaches, so the
+// glyph can be grown until it touches the disc and no further.
+//
+// The centre stays the centre of the ink box, exactly where it was: only the
+// scale changes, so no glyph shifts inside its pip. Measured by flattening
+// each path, arcs included, and taking the extreme point - not by eye.
+const GLYPH_FIT = {
+    bus: [12.00, 12.90, 10.70],
+    trolleybus: [12.00, 11.50, 13.57],
+    tram: [12.00, 10.60, 9.29],
+    metro: [12.00, 12.50, 12.38],
+    train: [12.00, 12.00, 10.56],
+    monorail: [12.00, 11.90, 12.58],
+    ferry: [12.00, 12.10, 10.73],
+    cable: [11.80, 12.00, 13.06],
+    funicular: [11.40, 13.50, 12.66],
+    vehicle: [12.00, 12.40, 12.59],
+    taxi: [12.00, 11.70, 11.30],
+    air: [12.00, 12.40, 11.45],
+    mute: [12.00, 12.00, 10.72],
+    // The one glyph whose centre is NOT its ink box: a slice of disc has lost
+    // ink on one side, so the box centre sits at 10.6 and the dial would be
+    // pushed off inside its pip - the very thing the rule exists to prevent.
+    // Centred on the disc instead, and the reach from there is the radius.
+    // Measured either way; this is the one where the rule had to be argued
+    // with, and doing so also took the set's floor from 0.445 to 0.509.
+    tomorrow: [12.00, 12.00, 9.60],
+    days: [12.00, 11.80, 12.10],
+    never: [12.00, 12.00, 11.44],
+    alert: [12.00, 12.35, 9.82],
+    incident: [11.90, 12.00, 10.17],
+    works: [12.00, 12.30, 12.01],
 };
 
-// mode glyph as a plain SVG path, centred on 0,0 and scaled so its INK spans
-// about 2r. Returns null for a mode we carry no outline for.
+// Which mark the top-right corner carries, from the alert's own cause and
+// effect (gtfs2 publishes them as their GTFS-RT names). Anything unlisted,
+// and anything with no cause at all, falls to the generic mark: a cone shown
+// for a strike would be worse than a shrug.
+const ALERT_WORKS = ["CONSTRUCTION", "MAINTENANCE"];
+const ALERT_INCIDENT = ["ACCIDENT", "TECHNICAL_PROBLEM", "POLICE_ACTIVITY", "MEDICAL_EMERGENCY"];
+
+// glyph as a plain SVG path, centred on 0,0 and scaled so its ink reaches
+// exactly r and no further. Returns null for a key we carry no outline for.
 const modeGlyph = (mode, r, fill) => {
-    const d = MDI_PATHS[mode];
+    const d = GLYPH_PATHS[mode];
     if (!d) return null;
-    const [bx, by, bw, bh] = MDI_BOX[mode] || [0, 0, 24, 24];
-    const sc = (r * 2) / Math.max(bw, bh);
-    const cx = (bx + bw / 2) * sc, cy = (by + bh / 2) * sc;
-    return `<path d="${d}" fill="${fill}" transform="translate(${(-cx).toFixed(2)} ${(-cy).toFixed(2)}) scale(${sc.toFixed(4)})"></path>`;
+    const [cx, cy, ri] = GLYPH_FIT[mode] || [12, 12, 12];
+    const sc = r / ri;
+    return `<path d="${d}" fill="${fill}" transform="scale(${sc.toFixed(4)}) translate(${(-cx).toFixed(2)} ${(-cy).toFixed(2)})"></path>`;
 };
 
 
@@ -239,6 +392,13 @@ const parseTs = (v) => {
 };
 
 const fmtHM = (d) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+// journey time, the way a timetable prints it: "1 h 04", "12 min"
+const fmtDur = (min) => {
+    if (!Number.isFinite(min) || min < 0) return "";
+    const h = Math.floor(min / 60), m = min % 60;
+    return h ? `${h} h ${String(m).padStart(2, "0")}` : `${m} min`;
+};
 
 const fmtCountdown = (lang, d, now) => {
     const mins = Math.round((d.getTime() - now.getTime()) / 60000);
@@ -279,6 +439,28 @@ const lighten = (hex, f) => {
 // the theme background says nothing about what the marker is filled with.
 const inkOn = (hex) => (/^#[0-9a-fA-F]{6}$/.test(hex || "") && luminance(hex) > 0.62 ? "#1b1b1b" : "#ffffff");
 
+// Drain a colour of its chroma while holding its lightness, for a line whose
+// source has gone quiet. Veiling it towards the card background was the first
+// attempt and it broke the badge: on TAO's grey line the number fell to 1.3:1,
+// unreadable, because lightening a dark colour under white ink destroys the
+// contrast the ink was chosen for. Taking the saturation out instead leaves
+// the lightness alone, so inkOn still answers correctly for the result, and a
+// drained colour reads as "no longer live" just as well.
+// Towards the grey of the SAME luminance, the one inkOn measures, not towards
+// a neutral of the same HSL lightness. HSL lightness is a poor stand-in for how
+// light a colour looks: desaturating TAO's yellow that way flipped it from dark
+// ink to light ink and landed it at 2.97:1, worse than where it started. Held
+// at constant luminance the ink can never flip, and every line keeps very
+// nearly the contrast it had.
+const drain = (hex, amount = 0.75) => {
+    if (!/^#[0-9a-fA-F]{6}$/.test(hex || "")) return hex;
+    const n = parseInt(hex.slice(1), 16);
+    const g = Math.round(luminance(hex) * 255);
+    return "#" + [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+        .map((v) => Math.round(v * (1 - amount) + g * amount).toString(16).padStart(2, "0"))
+        .join("");
+};
+
 const luminance = (hex) => {
     const n = parseInt(hex.slice(1), 16);
     return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
@@ -303,6 +485,11 @@ const haversine = (a, b) => {
 // shared fetch de-duplication: several card instances polling the same URL
 // within maxAge share one request and one payload
 const FETCH_SHARED = new Map(); // url → {at, promise}
+// A forced read still de-duplicates, but only across the burst that a mount
+// produces: three cards appearing together share one request, while anything
+// the tab has been holding since an earlier view is read again. Without this
+// window a dashboard with several cards would fire one request per card.
+const FETCH_BURST_MS = 1000;
 function fetchJsonShared(url, maxAgeMs) {
     const cached = FETCH_SHARED.get(url);
     const now = Date.now();
@@ -359,6 +546,7 @@ class Gtfs2LiveCard extends HTMLElement {
         this._ld = [];                    // per-line runtime: {geo, geoAt, err, route, routeAt, sig, sigAt}
         this._hist = new Map();           // "li:vid" → [{lat, lon, ts}]
         this._histSeen = new Map();       // "li:vid" → last time seen in the feed
+        this._vehCum = new Map();         // "li:vid" → last abscissa along the route (loop disambiguation)
         // per-entity derived metadata (positions file, label, color, origin
         // stop), persisted in localStorage: a line out of service loses its
         // Route/Trip attributes (sensor.remove_keys), and a page reload at
@@ -373,6 +561,7 @@ class Gtfs2LiveCard extends HTMLElement {
         this._manual = false;             // user panned/zoomed: auto-fit stops overriding
         this._pointers = new Map();       // active pointers on the map (pan/pinch)
         this._pinch = null;               // {dist, mid, vb} at pinch start
+        this._multi = false;              // two fingers touched the map: the release is not a tap
         this._moved = 0;
         this._suppressClick = false;
         this._downAction = null;         // [data-action] element under the last pointerdown
@@ -392,6 +581,7 @@ class Gtfs2LiveCard extends HTMLElement {
         this._keyHandler = null;          // document-level Escape while tracking
         this._hintT = null;
         this._tipT = null;                // stop tooltip auto-hide timer
+        this._badgeTipT = null;           // badge tooltip auto-hide timer (touch)
         this._vehEls = new Map();         // "li:vid" → persistent vehicle <g> node
         this._angCache = new Map();       // "li:vid" → {pos, angle}, spares a polyline walk per render
         this._popKey = null;              // vehicle the popup is attached to
@@ -527,24 +717,54 @@ class Gtfs2LiveCard extends HTMLElement {
             if (typeof l === "string") l = { entity: l };
             const entity = l.entity || (i === 0 ? c.entity || null : null);
             let purl = l.positions_url || null;
-            // no positions_url configured: derive it from the sensor,
-            // vehicle_positions_file when the integration exposes it, else the
-            // route/direction attributes a stock gtfs2 already carries.
-            if (!purl && entity && this._hass) {
+            let rurl = l.route_url || null;
+            // nothing configured: derive from the sensor, from the file names
+            // the integration exposes when it has them, else from the
+            // route/direction attributes a stock gtfs2 already carries. The
+            // two files are derived apart: realtime positions are optional,
+            // the route shape is exported from the schedule alone.
+            if ((!purl || !rurl) && entity && this._hass) {
                 const at = this._hass.states?.[entity]?.attributes || {};
                 const file = attrVal(at, "vehicle_positions_file");
+                const rfile = attrVal(at, "route_geojson_file");
                 const rid = attrVal(at, "route_route_id", "route_id");
                 const dir = attrVal(at, "trip_direction_id", "direction_id");
-                if (file) purl = "/local/gtfs2/" + file;
-                else if (rid != null && dir != null) purl = `/local/gtfs2/${rid}_${dir}.json`;
-                if (purl) this._remember(entity, { purl });
-                else purl = this._emeta.get(entity)?.purl || null;
+                const cached = this._emeta.get(entity);
+                if (!purl) {
+                    if (file) purl = "/local/gtfs2/" + file;
+                    // a gtfs2 that names its route export names its positions
+                    // file too when it writes one, so no vehicle_positions_file
+                    // means the entry publishes no positions at all: guessing a
+                    // name would only buy a 404 every refresh. A file this
+                    // sensor did name once is still honoured - it stops naming
+                    // it after the last departure of the day, which is exactly
+                    // when a card wants to say the feed has gone quiet.
+                    else if (rfile) purl = cached?.pnamed ? cached.purl : null;
+                    // no file named either way: an older gtfs2, where the
+                    // route and direction attributes are all there is to go on
+                    else if (rid != null && dir != null) purl = `/local/gtfs2/${rid}_${dir}.json`;
+                    else purl = cached?.purl || null;
+                }
+                if (!rurl) {
+                    if (rfile) rurl = "/local/gtfs2/" + rfile;
+                    // a named positions file names its companion: that beats
+                    // the route/direction guess, which only has to serve a
+                    // source publishing no positions at all
+                    else if (file) rurl = "/local/gtfs2/" + file.replace(/\.json$/, "_route.json");
+                    else if (rid != null && dir != null) rurl = `/local/gtfs2/${rid}_${dir}_route.json`;
+                    else rurl = cached?.rurl || null;
+                }
+                const patch = {};
+                if (purl) patch.purl = purl;
+                if (file) patch.pnamed = true;   // named by the integration, not guessed
+                if (rurl) patch.rurl = rurl;
+                if (purl || rurl) this._remember(entity, patch);
             }
             return {
                 idx: i,
                 entity,
                 positions_url: purl,
-                route_url: l.route_url || (purl ? purl.replace(/\.json$/, "_route.json") : null),
+                route_url: rurl || (purl ? purl.replace(/\.json$/, "_route.json") : null),
                 label: l.line != null ? String(l.line) : null,
                 color: l.color || l.line_color || null,
             };
@@ -574,7 +794,7 @@ class Gtfs2LiveCard extends HTMLElement {
             d.nextDate = at ? attrVal(at, "next_service_date") : null;
             // the sensor already carries the right mdi icon for its route_type
             const mdi = attrVal(at, "icon");
-            d.icon = mdi || cached?.icon || MDI_BY_MODE[d.mode] || "mdi:bus";
+            d.icon = mdi || cached?.icon || MDI_DEFAULTS[d.mode]?.[0] || "mdi:bus";
             if (d.entity) {
                 const patch = {};
                 if (short != null) patch.short = short;
@@ -595,6 +815,19 @@ class Gtfs2LiveCard extends HTMLElement {
             }
         }
         return defs;
+    }
+
+    // the family the badges actually render in, so the fitting measures what
+    // the user sees rather than a guess. Read once: it cannot change without
+    // the whole theme changing, which re-renders the card anyway.
+    _badgeFamily() {
+        if (this._bFamily) return this._bFamily;
+        try {
+            const card = this.shadowRoot?.querySelector("ha-card");
+            const f = card && getComputedStyle(card).fontFamily;
+            if (f) this._bFamily = f;
+        } catch (e) { /* rendu hors document */ }
+        return this._bFamily || "Roboto, sans-serif";
     }
 
     _lineLabelOf(def) {
@@ -636,14 +869,15 @@ class Gtfs2LiveCard extends HTMLElement {
         if (this._rerenderTimer) { clearTimeout(this._rerenderTimer); this._rerenderTimer = null; }
         if (this._hintT) { clearTimeout(this._hintT); this._hintT = null; }
         if (this._tipT) { clearTimeout(this._tipT); this._tipT = null; }
+        if (this._badgeTipT) { clearTimeout(this._badgeTipT); this._badgeTipT = null; }
         if (this._popAnim) { cancelAnimationFrame(this._popAnim); this._popAnim = null; }
     }
 
     _startPolling() {
         this._stopPolling();
-        // an entity without positions_url may expose its attributes later:
-        // keep polling armed as long as a source is possible
-        if (!this._config || !this._lineDefs().some((d) => d.positions_url || d.entity)) return;
+        // an entity without url may expose its attributes later: keep polling
+        // armed as long as a source is possible, positions or route alone
+        if (!this._config || !this._lineDefs().some((d) => d.positions_url || d.route_url || d.entity)) return;
         this._fetchAll(true);
         this._timer = setInterval(() => this._fetchAll(), Math.max(15, this._config.refresh) * 1000);
     }
@@ -652,16 +886,26 @@ class Gtfs2LiveCard extends HTMLElement {
         if (this._timer) { clearInterval(this._timer); this._timer = null; }
     }
 
+    // force means the card has just been put on screen. Home Assistant is a
+    // single page app: coming back to a view reuses the element and the tab
+    // still holds the payloads read the last time, so without this the first
+    // thing the user sees can be an hour old. A forced read goes past every
+    // cache, its own and the shared one, and reads the files again.
     _fetchAll(force) {
         if (document.hidden && !force) return;
         const period = Math.max(15, this._config.refresh) * 1000;
         for (const def of this._lineDefs()) {
-            if (!def.positions_url) continue;
             const slot = this._ld[def.idx];
+            // the route shape is the slow half and does not need the feed:
+            // fetch it on its own schedule, even for a line with no positions
+            if (def.route_url && (force || Date.now() - (slot?.routeAt || 0) > 60 * 60000)) {
+                this._fetchRoute(def, force);
+            }
+            if (!def.positions_url) continue;
             // collapsed map only needs the count: poll five times slower
-            if (!force && this._collapsed.map && slot && Date.now() - (slot.geoAt || 0) < period * 5) continue;
-            this._fetchPositions(def);
-            if (Date.now() - (slot?.routeAt || 0) > 60 * 60000) this._fetchRoute(def);
+            const mapOff = this._collapsed.map || this._config.show_map === false;
+            if (!force && mapOff && slot && Date.now() - (slot.geoAt || 0) < period * 5) continue;
+            this._fetchPositions(def, force);
         }
     }
 
@@ -698,6 +942,9 @@ class Gtfs2LiveCard extends HTMLElement {
         }
         if (expired || !spans.length) this._renderDepartures();
         this._renderFooter();
+        // a line crosses the 8-minute line without any fetch happening: the
+        // file is still answering, its date simply stopped moving
+        this._repaintHeaderIfMuteChanged();
         const at = this.shadowRoot.querySelector(".map-attrib");
         if (at) {
             const newestAt = Math.max(0, ...this._ld.map((s) => s.sigAt || 0));
@@ -707,7 +954,11 @@ class Gtfs2LiveCard extends HTMLElement {
 
     /* ── LOVELACE API ───────────────────────────────────────────────────── */
 
-    getCardSize() { return 1 + (this._collapsed.dep ? 1 : 3) + (this._collapsed.map ? 1 : 4); }
+    getCardSize() {
+        return 1
+            + (this._config.show_departures === false ? 0 : (this._collapsed.dep ? 1 : 3))
+            + (this._config.show_map === false ? 0 : (this._collapsed.map ? 1 : 4));
+    }
 
     static getConfigElement() {
         return document.createElement("gtfs2-live-card-editor");
@@ -779,6 +1030,7 @@ class Gtfs2LiveCard extends HTMLElement {
             <div id="map-body" class="map-body"></div>
             <div id="focus-panel"></div>
             <div id="footer" class="footer"></div>
+            <div class="badge-tip" hidden></div>
         </ha-card>`;
         this._footerHtml = null;          // the shell above just emptied it
         this.shadowRoot.addEventListener("click", (ev) => {
@@ -791,6 +1043,13 @@ class Gtfs2LiveCard extends HTMLElement {
             const t = ev.composedPath().find((n) => n.dataset && n.dataset.action);
             if (t) { ev.preventDefault(); this._activate(t); }
         });
+        // a title opens on hover and a finger cannot hover: on touch, the tap
+        // that selects a line also prints that badge's sentence under it
+        this.shadowRoot.addEventListener("pointerup", (ev) => {
+            if (ev.pointerType === "mouse") return;
+            const b = ev.composedPath().find((n) => n.dataset && n.dataset.tip);
+            if (b) this._showBadgeTip(b); else this._hideBadgeTip();
+        });
         this._renderHeader();
         this._renderDepartures();
         this._renderMapSection();
@@ -800,6 +1059,36 @@ class Gtfs2LiveCard extends HTMLElement {
 
     _activate(t) {
         this._act(t.dataset.action, t.dataset);
+    }
+
+    // A badge carries a sentence in its title: the destination, why it is
+    // struck through, what the operator is reporting, how long its source has
+    // been quiet. A title only opens on hover, and a phone has none - so on
+    // touch the tap prints it under the badge for a few seconds instead. It
+    // hangs off the card, not off the header, because selecting a line
+    // re-renders the header and would take the bubble with it.
+    _showBadgeTip(el) {
+        const card = this.shadowRoot.querySelector("ha-card");
+        const tip = this.shadowRoot.querySelector(".badge-tip");
+        if (!card || !tip || !el.dataset.tip) return;
+        tip.textContent = el.dataset.tip;
+        tip.hidden = false;
+        const c = card.getBoundingClientRect(), r = el.getBoundingClientRect();
+        const w = tip.offsetWidth;
+        // centred under the badge, then pushed back inside the card
+        tip.style.left = `${Math.max(8, Math.min(c.width - w - 8, r.left - c.left + r.width / 2 - w / 2))}px`;
+        // clear of the corner pips, which overhang the badge by half a gap,
+        // and never past the bottom of the card, which clips its overflow:
+        // both sections collapsed leaves the header barely a card tall
+        tip.style.top = `${Math.max(4, Math.min(c.height - tip.offsetHeight - 6, r.bottom - c.top + 8))}px`;
+        if (this._badgeTipT) clearTimeout(this._badgeTipT);
+        this._badgeTipT = setTimeout(() => this._hideBadgeTip(), 4000);
+    }
+
+    _hideBadgeTip() {
+        const tip = this.shadowRoot.querySelector(".badge-tip");
+        if (tip) tip.hidden = true;
+        if (this._badgeTipT) { clearTimeout(this._badgeTipT); this._badgeTipT = null; }
     }
 
     _act(action, ds) {
@@ -870,6 +1159,50 @@ class Gtfs2LiveCard extends HTMLElement {
 
     /* ── HEADER & FOOTER ────────────────────────────────────────────────── */
 
+    // What the operator is reporting on this line, or null. gtfs2 writes
+    // "no info" both when its alerts feed says nothing about this journey and
+    // when no alerts feed is configured at all, so there is nothing to tell
+    // apart: either way there is no alert, and no mark. An alert with a cause
+    // but no readable sentence still counts - the feed said something.
+    // A realtime departure of TODAY still ahead of us. After the last scheduled
+    // departure the sensor already says "resumes tomorrow", but as long as a
+    // late bus of today is still coming the line is not at rest.
+    _rtToday(d) {
+        const rta = d.entity ? this._hass?.states?.[d.entity]?.attributes?.next_departures_realtime : null;
+        const nowMs = Date.now();
+        return Array.isArray(rta) && rta.some((v) => {
+            const t = parseTs(v);
+            return t && t.getTime() > nowMs - 60000
+                && t.toDateString() === new Date(nowMs).toDateString();
+        });
+    }
+
+    // "Nothing today, and nothing until then", in words. The badge says it in
+    // marks - a diagonal stroke and a corner pip - and the empty board says it
+    // as a sentence. One reading behind all three, so they cannot disagree.
+    _restingNote(d) {
+        const nIn = d.nextIn;
+        if (!Number.isFinite(nIn) || nIn === 0 || this._rtToday(d)) return "";
+        return nIn < 0 ? this._t("resting_never")
+            : nIn === 1 ? this._t("resting_tomorrow")
+            : this._t("resting_days", { n: nIn });
+    }
+
+    _alertOf(d) {
+        const at = d.entity ? this._hass?.states?.[d.entity]?.attributes : null;
+        if (!at) return null;
+        const text = ["origin_stop_alert", "destination_stop_alert"]
+            .map((k) => attrVal(at, k))
+            .find((v) => v && v !== "no info") || "";
+        const cause = attrVal(at, "alert_cause") || "";
+        const effect = attrVal(at, "alert_effect") || "";
+        if (!text && !cause && !effect) return null;
+        const kind = ALERT_WORKS.includes(cause) ? "works"
+            : (ALERT_INCIDENT.includes(cause) || effect === "NO_SERVICE") ? "incident"
+            : "alert";
+        return { kind, text };
+    }
+
     _renderHeader() {
         // the shell only exists once the strings are in: a fetch that lands
         // first must not draw anything
@@ -906,13 +1239,27 @@ class Gtfs2LiveCard extends HTMLElement {
                 // icon of its own (not its mode's) keeps that one, via ha-icon.
                 let chipInner = "";
                 if (this._config.mode_icons !== false) {
-                    const own = d.icon && d.icon !== MDI_BY_MODE[d.mode || "bus"] ? d.icon : null;
-                    const g = own ? null : modeGlyph(d.mode || "bus", 9.3, "currentColor");
+                    const own = d.icon && !(MDI_DEFAULTS[d.mode || "bus"] || []).includes(d.icon) ? d.icon : null;
+                    const g = own ? null : modeGlyph(d.mode || "bus", PIP_INK, "currentColor");
                     chipInner = g
-                        ? `<svg class="badge-glyph" viewBox="-11.5 -11.5 23 23" aria-hidden="true">${g}</svg>`
+                        ? `<svg class="badge-glyph" viewBox="${-PIP / 2} ${-PIP / 2} ${PIP} ${PIP}" aria-hidden="true">${g}</svg>`
                         : `<ha-icon icon="${esc(own || d.icon || "mdi:bus")}"></ha-icon>`;
                 }
-                const chip = chipInner ? `<span class="badge-mode">${chipInner}</span>` : "";
+                const chip = chipInner ? `<span class="badge-pip mode br">${chipInner}</span>` : "";
+                // A source that has stopped reporting and a line with nothing
+                // out look identical: no marker either way, and a plain badge
+                // in the header. The card already holds the difference - the
+                // positions file carries a Last-Modified, and the integration
+                // rewrites it on every cycle whether it found a vehicle or not,
+                // so its date only ages when nobody is writing any more. That
+                // signal was used to DROP the vehicles of a stale line, in
+                // silence. Here it gets said.
+                //
+                // Three ways to fall quiet, one mark: the entity is gone from
+                // Home Assistant, it is there but unavailable, or it is fine
+                // and the positions file has frozen. The user does not have to
+                // tell them apart on a badge; the tooltip says which, and how
+                // long it has been.
                 // Nothing runs on this line right now. Mark it on the badge
                 // itself, opposite the mode chip, so a line resting for the
                 // weekend is told apart at a glance from one that is simply
@@ -924,9 +1271,59 @@ class Gtfs2LiveCard extends HTMLElement {
                 // tomorrow morning, so the badge is left alone. The stroke is
                 // for a line with nothing today AND nothing until later.
                 const nIn = d.nextIn;
+                // A late bus still on its way outranks the timetable: after
+                // the last scheduled departure the sensor already says
+                // "resumes tomorrow", but as long as a realtime departure of
+                // TODAY is still ahead, the line is not at rest and the
+                // stroke waits. Same window as the board's own filter, so
+                // the badge and the rows change together, not one by one.
+                const rtToday = this._rtToday(d);
                 // -1 means the feed has no service left for this journey at all,
                 // which deserves the mark as much as a long rest does
-                const resting = Number.isFinite(nIn) && nIn !== 0;
+                const restTitle = this._restingNote(d);
+                const resting = !!restTitle;
+                const slot = this._ld[d.idx];
+                const st = d.entity ? this._hass?.states?.[d.entity] : null;
+                const gone = !!d.entity && !st;
+                // "unknown" is the NORMAL state of a line with no departure to
+                // show: on a resting line, or one whose late realtime is still
+                // on the board, it must not read as a fault. Only
+                // "unavailable", or "unknown" outside those two, says the
+                // source itself has a problem.
+                const down = !!st && (st.state === "unavailable" || (st.state === "unknown" && !resting && !rtToday));
+                // a source that has already spoken gets the benefit of the
+                // doubt until it has been silent a full STALE_FEED: one failed
+                // request is a hiccup, not an outage, and a mark that blinks on
+                // and off teaches the user to ignore it. One that has never
+                // spoken and errors has nothing to wait for.
+                // a resting line's positions file is legitimately silent for
+                // days: that silence is explained by the rest, not news
+                const frozen = !!d.positions_url && !!slot && !resting
+                    && (slot.sigAt ? Date.now() - slot.sigAt > STALE_FEED : !!slot.err);
+                const mute = gone || down || frozen;
+                const muteTitle = !mute ? ""
+                    : gone ? this._t("mute_gone")
+                    : down ? this._t("mute_unavailable")
+                    : slot.err ? this._t("mute_unreachable")
+                    : this._t("mute_since", { t: fmtAgo(this._lang(), Date.now() - slot.sigAt) });
+                // opposite corner from the mode, and drawn on the opposite
+                // diagonal from the resting stroke: three marks can share one
+                // badge without any two being taken for each other
+                // top-right: the operator's own word on this line. It is the
+                // only mark that comes from outside the card's own reading of
+                // the data, so it sits opposite the mode and keeps its own ink.
+                const alert = this._alertOf(d);
+                const alertTitle = alert ? (alert.text || this._t("alert_" + alert.kind)) : "";
+                const alertPip = alert
+                    ? `<span class="badge-pip alert tr"><svg class="badge-glyph" `
+                      + `viewBox="${-PIP / 2} ${-PIP / 2} ${PIP} ${PIP}" aria-hidden="true">`
+                      + `${modeGlyph(alert.kind, PIP_INK, "currentColor")}</svg></span>`
+                    : "";
+                const mutePip = mute
+                    ? `<span class="badge-pip mute tl"><svg class="badge-glyph" `
+                      + `viewBox="${-PIP / 2} ${-PIP / 2} ${PIP} ${PIP}" aria-hidden="true">`
+                      + `${modeGlyph("mute", PIP_INK, "currentColor")}</svg></span>`
+                    : "";
                 let rest = "";
                 if (resting) {
                     // A single diagonal, not a cross: one stroke leaves the
@@ -943,10 +1340,27 @@ class Gtfs2LiveCard extends HTMLElement {
                         + `<path class="slash-halo" d="M10 50 L50 10" fill="none" stroke-linecap="round"/>`
                         + `<path d="M10 50 L50 10" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/>`
                         + `</svg>`;
+                    // The stroke says "not today" and says it for all three
+                    // cases. Which of the three is the bottom-left corner's
+                    // job: a dial for tomorrow, a calendar for a rest of
+                    // several days, a cross for a line with no service left
+                    // at all. Until this pip, only the tooltip told them
+                    // apart, and a tooltip is not hovered on a phone.
+                    //
+                    // The stroke ends under this pip - it runs to 10,50 and
+                    // the pip's disc is centred on 7,53 with a radius of 14 -
+                    // so it emerges from beneath it rather than crossing it.
+                    rest += `<span class="badge-pip svc bl"><svg class="badge-glyph" `
+                        + `viewBox="${-PIP / 2} ${-PIP / 2} ${PIP} ${PIP}" aria-hidden="true">`
+                        + `${modeGlyph(nIn < 0 ? "never" : nIn === 1 ? "tomorrow" : "days", PIP_INK, "currentColor")}`
+                        + `</svg></span>`;
                 }
                 // the label reads against its own line colour, the same rule
                 // the map markers follow: a light line colour takes dark text
-                const bg = d.color || this._config.line_color;
+                // a quiet line keeps its lightness and loses its chroma, so the
+                // ink rule below still holds and the number stays readable
+                const bg = mute ? drain(d.color || this._config.line_color)
+                                : (d.color || this._config.line_color);
                 const bink = inkOn(bg);
                 // the mode chip's disc goes the other way round from the ink,
                 // so the glyph keeps its contrast on light and dark lines alike
@@ -954,21 +1368,17 @@ class Gtfs2LiveCard extends HTMLElement {
                 // chip now overflows the badge, and a see-through disc would
                 // pick up the card behind it and read as a cut-off half moon
                 const chipBg = `color-mix(in srgb, ${bink === "#ffffff" ? "#000" : "#fff"} 40%, ${esc(bg)})`;
-                // the resting note joins the destination in the tooltip, which
-                // is the only place a badge can carry a sentence
-                const restTitle = resting
-                    ? (nIn < 0 ? this._t("resting_never")
-                        : nIn === 1 ? this._t("resting_tomorrow")
-                        : this._t("resting_days", { n: nIn }))
-                    : "";
-                const btitle = [bdest, restTitle].filter(Boolean).join(" · ");
+                const btitle = [bdest, restTitle, alertTitle, muteTitle].filter(Boolean).join(" · ");
                 // the halo takes the ink the other way round, so it separates
                 // the stroke from the badge whichever way the contrast runs
                 const opp = bink === "#ffffff" ? "#1b1b1b" : "#ffffff";
                 // the stroke says it visually and title says it on hover, but
                 // neither reaches a screen reader: state it in the text layer
-                const restSr = restTitle ? `<span class="sr-only">${esc(restTitle)}</span>` : "";
-                return `<div class="badge ${many ? "clickable" : ""} ${sel ? "sel" : ""} ${dim ? "dim" : ""} ${resting ? "resting" : ""}" style="background:${esc(bg)};color:${bink};--chip-bg:${chipBg};--opp-ink:${opp}"${a11y} title="${esc(btitle)}"><span class="badge-num">${esc(this._lineLabelOf(d))}</span>${restSr}${chip}${rest}</div>`;
+                const restSr = [restTitle, alertTitle, muteTitle].filter(Boolean)
+                    .map((s) => `<span class="sr-only">${esc(s)}</span>`).join("");
+                const blabel = this._lineLabelOf(d);
+                const bfs = badgeFontSize(blabel, this._badgeFamily());
+                return `<div class="badge ${many ? "clickable" : ""} ${sel ? "sel" : ""} ${dim ? "dim" : ""} ${resting ? "resting" : ""} ${mute ? "mute" : ""}" style="background:${esc(bg)};color:${bink};--chip-bg:${chipBg};--opp-ink:${opp}${bfs !== BADGE_FS ? `;font-size:${bfs}px` : ""}"${a11y} title="${esc(btitle)}"${btitle ? ` data-tip="${esc(btitle)}"` : ""}><span class="badge-num">${esc(blabel)}</span>${restSr}${chip}${mutePip}${alertPip}${rest}</div>`;
             })
             .join("");
         const titles = (title || dest)
@@ -1006,7 +1416,24 @@ class Gtfs2LiveCard extends HTMLElement {
         const rows = [];
         for (const src of sources) {
             const a = src.st.attributes || {};
-            const theo = (Array.isArray(a.next_departures) ? a.next_departures : []).map(parseTs).filter(Boolean);
+            const theoRaw = Array.isArray(a.next_departures) ? a.next_departures : [];
+            const dursRaw = Array.isArray(a.next_departures_durations) ? a.next_departures_durations : [];
+            const arrsRaw = Array.isArray(a.next_departures_destination_arrival_times) ? a.next_departures_destination_arrival_times : [];
+            // one entry per parsable departure, its journey time riding along
+            // so the pairing survives the filter and the multi-line sort:
+            // served ready-made by gtfs2 when the attribute exists, else
+            // derived from the paired arrivals list
+            const theoAll = theoRaw.map((v, j) => {
+                const t = parseTs(v);
+                if (!t) return null;
+                let dur = typeof dursRaw[j] === "number" ? dursRaw[j] : null;
+                if (dur == null) {
+                    const arr = parseTs(arrsRaw[j]);
+                    if (arr) dur = Math.round((arr.getTime() - t.getTime()) / 60000);
+                }
+                return { t, dur };
+            }).filter(Boolean);
+            const theo = theoAll.map((x) => x.t);
             const rt = (Array.isArray(a.next_departures_realtime) ? a.next_departures_realtime : []).map(parseTs).filter(Boolean);
             const delays = Array.isArray(a.next_delays_realtime) ? a.next_delays_realtime : [];
             const usedTheo = new Set();
@@ -1027,14 +1454,19 @@ class Gtfs2LiveCard extends HTMLElement {
                 const delayMin = theoT
                     ? Math.round((t.getTime() - theoT.getTime()) / 60000)
                     : (rawDelay != null ? Math.round(rawDelay / 60) : null);
-                rows.push({ time: t, theo: theoT, rt: true, delayMin, def: src.def });
+                rows.push({ time: t, theo: theoT, rt: true, delayMin, durMin: theoT && best >= 0 ? theoAll[best].dur : null, def: src.def });
             });
             theo.forEach((th, j) => {
-                if (!usedTheo.has(j)) rows.push({ time: th, theo: null, rt: false, delayMin: null, def: src.def });
+                if (!usedTheo.has(j)) rows.push({ time: th, theo: null, rt: false, delayMin: null, durMin: theoAll[j].dur, def: src.def });
             });
         }
+        // a row leaves the board only once BOTH of its clocks are behind us:
+        // a late bus keeps its future realtime, an early bus keeps its future
+        // schedule slot. Filtering on the realtime alone dropped an early bus
+        // before the hour printed at the stop had even come.
         const cutoff = Date.now() - 60000;
-        const upcoming = rows.filter((r) => r.time.getTime() > cutoff);
+        const upcoming = rows.filter((r) =>
+            Math.max(r.time.getTime(), r.theo ? r.theo.getTime() : 0) > cutoff);
         upcoming.sort((x, y) => x.time - y.time);
         return { rows: upcoming.slice(0, this._config.max_departures), multi: sources.length > 1 };
     }
@@ -1043,8 +1475,9 @@ class Gtfs2LiveCard extends HTMLElement {
         if (!this._built) return;   // no shell yet: see _renderHeader
         const head = this.shadowRoot.getElementById("dep-head");
         const body = this.shadowRoot.getElementById("dep-body");
-        // map-only card (no departure sensor anywhere): hide the pane entirely
-        if (!this._depSources().length) {
+        // hidden by configuration, or a map-only card with no departure
+        // sensor anywhere: no pane, no header, not even its divider
+        if (this._config.show_departures === false || !this._depSources().length) {
             head.style.display = "none";
             body.innerHTML = "";
             return;
@@ -1109,7 +1542,9 @@ class Gtfs2LiveCard extends HTMLElement {
                         ${r.rt ? `<span class="rt-icon">${ICONS.live}</span>` : ""}
                         ${destSub ? `<span class="sub dest-inline">${esc(destSub)}</span>` : ""}
                     </div>
-                    ${sub}
+                    ${this._config.show_duration
+                        ? `<span class="sub-line">${sub}${r.durMin != null ? `<span class="sub dur">→ ${fmtHM(new Date(r.time.getTime() + r.durMin * 60000))} (${fmtDur(r.durMin)})</span>` : ""}</span>`
+                        : sub}
                 </div>
                 <span class="spacer"></span>
                 <div class="right">
@@ -1140,19 +1575,51 @@ class Gtfs2LiveCard extends HTMLElement {
         }
 
         const hiSt = hiDef?.entity ? this._hass?.states?.[hiDef.entity] : null;
+        // "No upcoming departure" is a dead end: it is true, and it leaves the
+        // user with nowhere to go. When the line is at rest the card already
+        // knows when it runs again - it is on the badge, in a tooltip a finger
+        // can barely reach. The board is where they are looking, so it says the
+        // date instead. Only the lines shown here are asked: with a line
+        // selected the board is that line's, and its rest is the whole answer.
+        const restDefs = hiDef ? [hiDef] : this._depSources().map((s) => s.def).filter(Boolean);
+        const notes = restDefs.map((d) => [d, this._restingNote(d)]).filter(([, n]) => n);
+        const uniq = [...new Set(notes.map(([, n]) => n))];
+        // one date for every line at rest: say it once, unprefixed
+        const restMsg = !notes.length ? ""
+            : uniq.length === 1 ? uniq[0]
+            : notes.map(([d, n]) => this._t("line_prefix", { l: this._lineLabelOf(d) }) + n).join(" · ");
         const emptyMsg = hiDef && !hiDef.entity ? this._t("no_dep_sensor")
-            : (hiSt && hiSt.state === "unavailable" ? this._t("sensor_unavailable") : this._t("none_upcoming"));
-        body.innerHTML = (rowsHtml || `<div class="empty">${emptyMsg}</div>`)
+            : (hiSt && hiSt.state === "unavailable" ? this._t("sensor_unavailable")
+                : (restMsg || this._t("none_upcoming")));
+        body.innerHTML = (rowsHtml || `<div class="empty${restMsg && !(hiDef && !hiDef.entity) ? " rest" : ""}">${emptyMsg}</div>`)
             + (chips.length ? `<div class="info-strip">${chips.join("")}</div>` : "");
     }
 
     /* ── PANE 2: MAP data ───────────────────────────────────────────────── */
 
-    async _fetchPositions(def) {
+    // Which lines currently read as quiet, as one comparable string. The badge
+    // carries that mark, and nothing else would redraw the header for it:
+    // hassChanged only fires when a sensor moves, and a frozen positions file
+    // is precisely the case where the sensor may be the only thing still
+    // moving - or, for a deleted entity, where nothing moves at all.
+    _muteKey() {
+        const now = Date.now();
+        return this._ld.map((s) => !s ? "-"
+            : (s.err ? "e" : "") + (s.sigAt ? (now - s.sigAt > STALE_FEED ? "s" : "f") : "n")).join("");
+    }
+
+    _repaintHeaderIfMuteChanged() {
+        const key = this._muteKey();
+        if (key === this._lastMuteKey) return;
+        this._lastMuteKey = key;
+        if (this._built) this._renderHeader();
+    }
+
+    async _fetchPositions(def, force) {
         const slot = this._ld[def.idx];
         if (!slot) return;
         try {
-            const maxAge = Math.max(15, this._config.refresh) * 500;
+            const maxAge = force ? FETCH_BURST_MS : Math.max(15, this._config.refresh) * 500;
             slot.geo = await fetchJsonShared(def.positions_url, maxAge);
             slot.geoAt = Date.now();
             slot.err = null;
@@ -1197,38 +1664,59 @@ class Gtfs2LiveCard extends HTMLElement {
             if (key.startsWith(`${def.idx}:`) && (this._histSeen.get(key) || 0) < cutoff) {
                 this._hist.delete(key);
                 this._histSeen.delete(key);
+                this._vehCum.delete(key);
             }
         }
         this._scheduleRerender();
         this._renderFooter();
+        this._repaintHeaderIfMuteChanged();
     }
 
-    async _fetchRoute(def) {
+    async _fetchRoute(def, force) {
         const slot = this._ld[def.idx];
         if (!slot || !def.route_url) return;
         slot.routeAt = Date.now();
         try {
-            const gj = await fetchJsonShared(def.route_url, 5 * 60000);
+            const gj = await fetchJsonShared(def.route_url, force ? FETCH_BURST_MS : 5 * 60000);
             const lineFeat = (gj.features || []).find((f) => f.geometry?.type === "LineString");
             const stopFeats = (gj.features || []).filter((f) => f.geometry?.type === "Point");
-            if (!lineFeat || !Array.isArray(lineFeat.geometry.coordinates)) { slot.route = null; return; }
-            const line = lineFeat.geometry.coordinates.map(([lon, lat]) => this._world(lat, lon));
-            const mPerU = this._mPerU(lineFeat.geometry.coordinates[0][1]);
+            // Newer gtfs2 exports carry the ordered stops alone, the polyline
+            // is ours to rebuild, stop_sequence giving the order. A LineString
+            // written by an older export stays honoured as is.
+            const lineCoords = lineFeat && Array.isArray(lineFeat.geometry.coordinates)
+                ? lineFeat.geometry.coordinates
+                : stopFeats
+                    .slice()
+                    .sort((a, b) => (a.properties?.stop_sequence ?? 0) - (b.properties?.stop_sequence ?? 0))
+                    .map((f) => f.geometry.coordinates);
+            if (lineCoords.length < 2) { slot.route = null; return; }
+            const line = lineCoords.map(([lon, lat]) => this._world(lat, lon));
+            const mPerU = this._mPerU(lineCoords[0][1]);
             const cum = [0];
             for (let i = 1; i < line.length; i++) {
                 cum.push(cum[i - 1] + Math.hypot(line[i].x - line[i - 1].x, line[i].y - line[i - 1].y) * mPerU);
             }
-            const stops = stopFeats.map((f) => {
-                const [lon, lat] = f.geometry.coordinates;
-                const w = this._world(lat, lon);
-                return {
-                    ...w,
-                    id: String(f.properties?.stop_id || ""),
-                    name: String(f.properties?.stop_name || ""),
-                    seq: f.properties?.stop_sequence,
-                    cum: this._projectOnPolyline(w, line, cum).cum,
-                };
-            }).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+            let minCum = 0;
+            const stops = stopFeats
+                .sort((a, b) => (a.properties?.stop_sequence ?? 0) - (b.properties?.stop_sequence ?? 0))
+                .map((f) => {
+                    const [lon, lat] = f.geometry.coordinates;
+                    const w = this._world(lat, lon);
+                    // in stop order, never backwards: a loop serves the same
+                    // stop twice, and both visits used to land on whichever
+                    // leg was nearest, one of them wrong. The 30 m floor is
+                    // what pushes the second visit PAST the first - two real
+                    // stops are never that close, two visits of one are at 0
+                    const c = this._projectOnPolyline(w, line, cum, { prevCum: minCum + 30 / mPerU, tolU: 60 / mPerU }).cum;
+                    minCum = Math.max(minCum, c);
+                    return {
+                        ...w,
+                        id: String(f.properties?.stop_id || ""),
+                        name: String(f.properties?.stop_name || ""),
+                        seq: f.properties?.stop_sequence,
+                        cum: c,
+                    };
+                });
             slot.route = { line, cum, stops, mPerU };
         } catch (e) {
             // route export absent (older gtfs2): the card degrades to traces
@@ -1271,7 +1759,7 @@ class Gtfs2LiveCard extends HTMLElement {
         return (EARTH_CIRC * Math.cos((lat * Math.PI) / 180)) / WORLD;
     }
 
-    _projectOnPolyline(pt, line, cum) {
+    _projectOnPolyline(pt, line, cum, opts) {
         let best = { d2: Infinity, cum: 0, point: line[0] || pt, idx: 0, t: 0 };
         for (let i = 1; i < line.length; i++) {
             const ax = line[i - 1].x, ay = line[i - 1].y;
@@ -1285,15 +1773,96 @@ class Gtfs2LiveCard extends HTMLElement {
                 best = { d2, cum: cum[i - 1] + (cum[i] - cum[i - 1]) * t, point: { x: px, y: py }, idx: i - 1, t };
             }
         }
-        return best;
+        if (!opts || !line.length) return best;
+        // A loop line runs out and back along the same streets, so the shape
+        // passes a point TWICE and "nearest" is a coin toss between the legs.
+        // Picking the return leg for an outbound bus painted the whole route
+        // as already ridden, the user's own stop included. Collect every
+        // passage that comes close (one candidate per contiguous stretch of
+        // segments), then let what the caller knows decide: the vehicle's
+        // heading first - the two legs run opposite ways, so it settles them
+        // outright - then its previous progress along the route.
+        const lim = (Math.sqrt(best.d2) + (opts.tolU || 0)) ** 2;
+        const cands = [];
+        let cur = null;
+        for (let i = 1; i < line.length; i++) {
+            const ax = line[i - 1].x, ay = line[i - 1].y;
+            const bx = line[i].x, by = line[i].y;
+            const dx = bx - ax, dy = by - ay;
+            const len2 = dx * dx + dy * dy;
+            const t = len2 ? Math.max(0, Math.min(1, ((pt.x - ax) * dx + (pt.y - ay) * dy) / len2)) : 0;
+            const px = ax + t * dx, py = ay + t * dy;
+            const d2 = (pt.x - px) ** 2 + (pt.y - py) ** 2;
+            if (d2 > lim) continue;
+            if (cur && cur.end === i - 1) {
+                cur.end = i;
+                if (d2 < cur.d2) Object.assign(cur, { d2, cum: cum[i - 1] + (cum[i] - cum[i - 1]) * t, point: { x: px, y: py }, idx: i - 1, t });
+            } else {
+                cur = { d2, cum: cum[i - 1] + (cum[i] - cum[i - 1]) * t, point: { x: px, y: py }, idx: i - 1, t, end: i };
+                cands.push(cur);
+            }
+        }
+        let pool = cands;
+        if (opts.dir) {
+            const ahead = pool.filter((c) => {
+                const a = line[c.idx], b = line[c.idx + 1];
+                return (b.x - a.x) * opts.dir.x + (b.y - a.y) * opts.dir.y > 0;
+            });
+            if (ahead.length) pool = ahead;
+        }
+        if (opts.prevCum != null) {
+            const onward = pool.filter((c) => c.cum >= opts.prevCum - (opts.backU || 0));
+            if (onward.length) pool = onward;
+        }
+        let pick = pool[0] || best;
+        if (opts.prevCum != null && pool.length > 1) {
+            // several passages still in play: a vehicle advances, so the
+            // credible one is the SMALLEST step forward from where it was,
+            // not the geometrically nearest - nearest is the coin toss this
+            // whole branch exists to avoid
+            for (const c of pool) {
+                const jc = c.cum - opts.prevCum, jp = pick.cum - opts.prevCum;
+                if ((jc >= 0 && (jp < 0 || jc < jp)) || (jc < 0 && jp < 0 && jc > jp)) pick = c;
+            }
+        } else {
+            for (const c of pool) if (c.d2 < pick.d2) pick = c;
+        }
+        return pick;
+    }
+
+    // what the card knows about a vehicle, packaged for the projection: its
+    // heading over the last two positions (only once it has really moved -
+    // GPS jitter at a stop is not a heading), and how far along the route it
+    // was last time. Progress is remembered per vehicle so the split cannot
+    // leap between legs from one refresh to the next.
+    _projectVeh(li, vid, w, route) {
+        const key = `${li}:${vid}`;
+        const h = this._hist.get(key) || [];
+        let dir = null;
+        if (h.length > 1) {
+            const a = this._world(h[h.length - 2].lat, h[h.length - 2].lon);
+            const b = this._world(h[h.length - 1].lat, h[h.length - 1].lon);
+            const dx = b.x - a.x, dy = b.y - a.y;
+            const m = Math.hypot(dx, dy);
+            if (m * route.mPerU > 15) dir = { x: dx / m, y: dy / m };
+        }
+        const prev = this._vehCum.get(key);
+        const prj = this._projectOnPolyline(w, route.line, route.cum, {
+            dir,
+            prevCum: Number.isFinite(prev) ? prev : null,
+            tolU: 60 / route.mPerU,
+            backU: 250 / route.mPerU,
+        });
+        this._vehCum.set(key, prj.cum);
+        return prj;
     }
 
     // heading (degrees, 0 = north, clockwise) of the route at the point's
     // projection: the LineString follows the travel direction of the trip,
     // so this is the correct arrow orientation by construction. Returns null
     // when the point is too far from the route to trust it.
-    _routeAngleAt(route, w) {
-        const prj = this._projectOnPolyline(w, route.line, route.cum);
+    _routeAngleAt(route, w, prj) {
+        prj = prj || this._projectOnPolyline(w, route.line, route.cum);
         if (Math.sqrt(prj.d2) * route.mPerU > 150) return null;
         let i0 = prj.idx, i1 = Math.min(prj.idx + 1, route.line.length - 1);
         let a = route.line[i0], b = route.line[i1];
@@ -1386,13 +1955,21 @@ class Gtfs2LiveCard extends HTMLElement {
         if (!this._built) return;   // no shell yet: see _renderHeader
         const head = this.shadowRoot.getElementById("map-head");
         const body = this.shadowRoot.getElementById("map-body");
+        if (this._config.show_map === false) {
+            head.style.display = "none";
+            body.innerHTML = "";
+            this._mapDomReady = false;
+            this.shadowRoot.getElementById("focus-panel").innerHTML = "";
+            return;
+        }
+        head.style.display = "";
         head.setAttribute("aria-expanded", String(!this._collapsed.map));
         if (this._collapsed.map) {
             const count = this._liveBusCount();
             const stale = this._feedStaleAge();
             const summary = stale
                 ? `<span class="summary warn">${this._t("feed_stale", { t: fmtAgo(this._lang(), stale) })}</span>`
-                : `<span class="summary">${count ? this._busCountText(count) : "…"}</span>`;
+                : `<span class="summary">${this._mapSummary(count)}</span>`;
             head.innerHTML = `
                 <span class="chev">${ICONS.chevronRight}</span>
                 <span class="sect-title">${this._t("line_map")}</span>
@@ -1403,13 +1980,25 @@ class Gtfs2LiveCard extends HTMLElement {
             this.shadowRoot.getElementById("focus-panel").innerHTML = "";
             return;
         }
-        if (!this._lineDefs().some((d) => d.positions_url)) {
+        // positions are optional: a line that only knows its route shape
+        // still has a map worth drawing
+        if (!this._lineDefs().some((d) => d.positions_url || d.route_url)) {
             this._renderMapHead();
             body.innerHTML = `<div class="empty">${this._t("no_source")}</div>`;
             this._mapDomReady = false;
             return;
         }
         this._renderMap(false);
+    }
+
+    // collapsed pane, no vehicle to count: an endless ellipsis is the wrong
+    // answer for a line that simply publishes no positions and is showing
+    // its route below
+    _mapSummary(count) {
+        if (count) return this._busCountText(count);
+        const posOk = this._ld.some((s) => s.geoAt && !s.err);
+        if (!posOk && this._ld.some((s) => s.route)) return this._t("route_only");
+        return "…";
     }
 
     _ensureMapDom(body) {
@@ -1429,8 +2018,10 @@ class Gtfs2LiveCard extends HTMLElement {
                     <button class="map-ctrl-btn" data-action="zoom-out" aria-label="${esc(this._t("zoom_out"))}">−</button>
                     <button class="map-ctrl-btn" data-action="recenter" aria-label="${esc(this._t("recenter"))}" title="${esc(this._t("recenter"))}" hidden>⌖</button>
                 </div>
-                <span class="map-attrib"></span>
-                <div class="map-scale"><i></i><span></span></div>
+                <div class="map-foot">
+                    <div class="map-scale"><i></i><span></span></div>
+                    <span class="map-attrib"></span>
+                </div>
                 <div class="map-hint"></div>
                 <div class="map-pop" hidden></div>
                 <div class="map-tip" hidden></div>
@@ -1445,6 +2036,7 @@ class Gtfs2LiveCard extends HTMLElement {
     }
 
     _renderMap(animate) {
+        if (this._config.show_map === false) return;
         const body = this.shadowRoot.getElementById("map-body");
         const panel = this.shadowRoot.getElementById("focus-panel");
         const defs = this._lineDefs();
@@ -1478,9 +2070,16 @@ class Gtfs2LiveCard extends HTMLElement {
         const stations = this._stationPoints(topLi);
         const anyRoute = this._ld.some((s) => s.route);
         if (!all.length && !anyRoute && !stations.length) {
-            const errSlot = this._ld.find((s) => s.err);
-            const anyData = this._ld.some((s) => s.geoAt);
-            const msg = errSlot ? this._t("unreachable") : (anyData ? this._t("no_bus") : this._t("loading"));
+            // nothing to draw at all: name the half that is missing. A route
+            // fetch already attempted and empty is the useful thing to say
+            // when the line publishes no positions to begin with.
+            const posErr = this._ld.some((s) => s.err);
+            const posData = this._ld.some((s) => s.geoAt);
+            const routeTried = this._ld.some((s) => s.routeAt);
+            const msg = posErr ? this._t("unreachable")
+                : posData ? this._t("no_bus")
+                : routeTried ? this._t("route_unreachable")
+                : this._t("loading");
             body.innerHTML = `<div class="empty">${msg}</div>`;
             this._mapDomReady = false;
             panel.innerHTML = "";
@@ -1647,7 +2246,7 @@ class Gtfs2LiveCard extends HTMLElement {
                 if (isFocusLine) {
                     const lineRel = route.line.map(rel);
                     const busW = this._world(focusEntry.f.geometry.coordinates[1], focusEntry.f.geometry.coordinates[0]);
-                    const prj = this._projectOnPolyline(busW, route.line, route.cum);
+                    const prj = this._projectVeh(def.idx, this._vid(focusEntry.f), busW, route);
                     // the split runs through the vehicle's real position, not its
                     // projection: on a coarse shape (straight segment between two
                     // stops) the bus becomes an intermediate vertex, so both
@@ -1740,7 +2339,7 @@ class Gtfs2LiveCard extends HTMLElement {
             else {
                 angle = null;
                 const route = this._ld[def.idx]?.route;
-                if (route) angle = this._routeAngleAt(route, wpt);
+                if (route) angle = this._routeAngleAt(route, wpt, this._projectVeh(def.idx, vid, wpt, route));
                 if (angle == null) {
                     const h = this._hist.get(angKey) || [];
                     if (h.length > 1) {
@@ -1765,7 +2364,11 @@ class Gtfs2LiveCard extends HTMLElement {
             const R = (focused ? 16 : markerR) * u;
             const ink = inkOn(def.color);
             const body = (this._config.mode_icons !== false
-                    && modeGlyph(def.mode || "bus", R * 0.52, ink))
+                    // r is now the ink radius, not half the longest side: 0.638
+                    // is the factor that leaves the marker glyphs the average
+                    // size they had under the old rule, so the map does not
+                    // silently resize when the badges gain their pixels
+                    && modeGlyph(def.mode || "bus", R * 0.638, ink))
                 || `<path d="M0 ${-5 * u} L${4.2 * u} ${3.5 * u} L0 ${1.6 * u} L${-4.2 * u} ${3.5 * u} Z" fill="${ink}"></path>`;
             // heading arrow: only when a heading is known, and only on the
             // markers big enough to carry it without turning into a blob
@@ -1957,7 +2560,7 @@ class Gtfs2LiveCard extends HTMLElement {
             const stale = this._feedStaleAge();
             summary = stale
                 ? `<span class="summary warn">${this._t("feed_stale", { t: fmtAgo(this._lang(), stale) })}</span>`
-                : `<span class="summary">${count ? this._busCountText(count) : "…"}</span>`;
+                : `<span class="summary">${this._mapSummary(count)}</span>`;
         }
         head.innerHTML = `
             <span class="chev">${ICONS.chevronDown}</span>
@@ -2127,6 +2730,15 @@ class Gtfs2LiveCard extends HTMLElement {
         svg.addEventListener("pointerup", (e) => this._mapUp(e, svg));
         svg.addEventListener("pointercancel", (e) => this._mapUp(e, svg));
         svg.addEventListener("wheel", (e) => this._mapWheel(e, svg), { passive: false });
+        // touch-action: pan-y hands ONE finger to the page, which is what the
+        // card wants. It has no way to say "and two fingers are mine": the
+        // browser reads a two-finger vertical drag as a page scroll as well,
+        // takes it, and cancels the pointers mid-gesture - the dashboard
+        // scrolled and the map never moved. Refusing the touch stream as soon
+        // as a second finger lands is what keeps the gesture on the map.
+        const holdMulti = (e) => { if (e.touches.length >= 2) e.preventDefault(); };
+        svg.addEventListener("touchstart", holdMulti, { passive: false });
+        svg.addEventListener("touchmove", holdMulti, { passive: false });
         svg.addEventListener("dblclick", (e) => this._mapDblClick(e, svg));
         // instant stop tooltip on mouse hover (touch uses the tap action)
         svg.addEventListener("pointerover", (e) => { if (e.pointerType === "mouse") this._stopHover(e, true); });
@@ -2182,6 +2794,7 @@ class Gtfs2LiveCard extends HTMLElement {
             : null;
         this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
         this._moved = 0;
+        if (this._pointers.size >= 2) this._multi = true;
         if (this._pointers.size === 2 && this._viewBox) {
             const [a, b] = [...this._pointers.values()];
             const rect = svg.getBoundingClientRect();
@@ -2238,7 +2851,9 @@ class Gtfs2LiveCard extends HTMLElement {
         this._pinch = null;
         const t = this._downAction;
         this._downAction = null;
-        if (e.type === "pointerup" && this._moved <= 5 && this._pointers.size === 0) {
+        // lifting off a two-finger pan is not a tap: without this it closed
+        // the tracking popup every time the map was moved with two fingers
+        if (e.type === "pointerup" && this._moved <= 5 && !this._multi && this._pointers.size === 0) {
             if (t) {
                 this._suppressClick = true; // the retargeted/native click must not re-activate
                 this._activate(t);
@@ -2248,6 +2863,7 @@ class Gtfs2LiveCard extends HTMLElement {
                 this._act("untrack", {});
             }
         }
+        if (this._pointers.size === 0) this._multi = false;
         if (this._manual) this._scheduleRerender();
         setTimeout(() => { this._suppressClick = false; }, 250);
     }
@@ -2302,18 +2918,53 @@ class Gtfs2LiveCard extends HTMLElement {
     _styles() {
         return `
         :host { display: block; }
-        ha-card { overflow: hidden; font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif); }
-        .header { display: flex; align-items: center; gap: 12px; padding: 14px 16px 10px 16px; }
-        .badges { display: flex; gap: 9px; flex-wrap: wrap; }
-        .badge { position: relative; min-width: 60px; height: 60px; border-radius: 13px; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 28px; font-weight: 700; padding: 0 10px; box-sizing: border-box; }
+        ha-card { overflow: hidden; position: relative; font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif); }
+        /* The badges and the text zone sit side by side until the text zone
+           would be squeezed under TITLES_MIN; then it takes a row of its own.
+           Without the wrap a crowded header shrank the zone to nothing and the
+           station name spilled past the card, which clips it. */
+        .header { display: flex; align-items: center; gap: 12px; padding: 14px 16px 10px 16px; flex-wrap: wrap; }
+        /* a floor of one badge: without it the block's max-content (every badge
+           on one row) set the card's minimum width, and the card then refused
+           to fit a column narrower than that */
+        .badges { display: flex; gap: ${PIP_GAP}px; flex-wrap: wrap; min-width: ${BADGE_W}px; }
+        /* at most four badges per row, but ONLY while a text zone needs the
+           rest of the frame: without it flex would let a crowded header
+           push the text into a sliver. 282 = 4 x 60 + 3 x 14; a narrower
+           card still shrinks the zone below it on its own. No title and no
+           selection means no titles element at all, the badges are alone
+           in the header, and they take the whole width back */
+        .badges:not(:only-child) { max-width: ${4 * BADGE_W + 3 * PIP_GAP}px; }
+        /* a fixed square, never a box that grows with its label: two lines
+           side by side have to be the same size, so it is the number that
+           shrinks to fit the 40px between the paddings. See badgeFontSize. */
+        .badge { position: relative; width: 60px; height: 60px; flex: none; border-radius: 13px; color: #fff; display: flex; align-items: center; justify-content: center; font-size: ${BADGE_FS}px; font-weight: 700; padding: 0 ${BADGE_PAD}px; box-sizing: border-box; }
         /* the mode chip rides on the badge itself: no disc, no outline, just
            the glyph in the badge's own ink, so it reads as part of the badge */
         /* a faint disc behind the glyph, tinted OPPOSITE to the ink: tinting it
            in the ink itself would put a white veil under a white glyph and
            swallow it. Set per badge as --chip-bg, since the ink depends on the
            line colour. */
-        .badge-mode { position: absolute; right: -4px; bottom: -5px; width: 29px; height: 29px; border-radius: 50%; background: var(--chip-bg, color-mix(in srgb, #000 40%, transparent)); display: flex; align-items: center; justify-content: center; color: inherit; pointer-events: none; --mdc-icon-size: 24px; }
-        .badge-mode ha-icon { display: flex; }
+        /* one size, one overhang, four possible corners: a mark is told apart
+           by what it holds and by where it sits, never by how big it is */
+        .badge-pip { position: absolute; width: ${PIP}px; height: ${PIP}px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: inherit; pointer-events: none; z-index: 3; --mdc-icon-size: 26px; }
+        .badge-pip.br { right: ${-PIP_GAP / 2}px; bottom: ${-PIP_GAP / 2}px; }
+        .badge-pip.tl { left: ${-PIP_GAP / 2}px; top: ${-PIP_GAP / 2}px; }
+        .badge-pip.tr { right: ${-PIP_GAP / 2}px; top: ${-PIP_GAP / 2}px; }
+        .badge-pip.bl { left: ${-PIP_GAP / 2}px; bottom: ${-PIP_GAP / 2}px; }
+        .badge-pip.mode { background: var(--chip-bg, color-mix(in srgb, #000 40%, transparent)); }
+        /* the state mark reads against the card, not against the line colour,
+           so it says the same thing whatever line it sits on */
+        .badge-pip.mute { background: var(--card-background-color, #fff); color: var(--warning-color, #b26a00); box-shadow: inset 0 0 0 1.5px currentColor; z-index: 5; }
+        /* same treatment, deliberately not the same colour: a line resting
+           for the weekend is not a fault, so it stays neutral and leaves the
+           warning ink to the source that has gone quiet */
+        .badge-pip.svc { background: var(--card-background-color, #fff); color: var(--secondary-text-color, #727272); box-shadow: inset 0 0 0 1.5px currentColor; z-index: 5; }
+        /* the operator reporting a disruption outranks a stale file: this one
+           takes the error ink, the quiet source keeps the warning ink, and the
+           line at rest stays neutral. Three corners, three levels, one geometry */
+        .badge-pip.alert { background: var(--card-background-color, #fff); color: var(--error-color, #b3261e); box-shadow: inset 0 0 0 1.5px currentColor; z-index: 5; }
+        .badge-pip ha-icon { display: flex; }
         /* a line with no service is struck through by a single diagonal, at
            65% so it stays a note rather than a warning: the number underneath
            must remain readable. The halo below the stroke carries the opposite
@@ -2321,7 +2972,7 @@ class Gtfs2LiveCard extends HTMLElement {
            line, where 65% ink alone measures barely 2.2:1. */
         /* the number sits above the stroke, so the diagonal crosses the badge
            without burying the digits */
-        .badge-num { position: relative; z-index: 3; line-height: 1; }
+        .badge-num { position: relative; z-index: 4; line-height: 1; }
         /* read out, never drawn: the diagonal is the visual half of this */
         .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
         .badge-slash { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; opacity: 0.65; border-radius: 13px; }
@@ -2330,15 +2981,30 @@ class Gtfs2LiveCard extends HTMLElement {
            is not running. Only the badge as a whole steps back a little. */
         .badge.resting { opacity: 0.92; }
         .badge.resting.sel { opacity: 1; }
-        .badge-glyph { width: 24px; height: 24px; display: block; }
+        /* A quiet source is drained, not dimmed. The colour itself is replaced
+           by its desaturated twin (see drain), so nothing here fades the number
+           or the mark: an opacity on the badge would take the mark down with
+           it, and a veil over the colour cost the number its contrast. */
+        .badge-glyph { width: ${PIP}px; height: ${PIP}px; display: block; }
         .badge.clickable { cursor: pointer; }
         .badge.sel { outline: 2px solid var(--primary-color); outline-offset: 2px; }
         .badge.dim { opacity: 0.45; }
+        /* the hover title, said out loud for a finger. Same ink and shadow as
+           the map tooltip, but it wraps: a badge's sentence can run to a
+           destination, a rest and an alert at once. */
+        .badge-tip { position: absolute; z-index: 6; max-width: min(280px, calc(100% - 16px)); background: var(--card-background-color, #fff); color: var(--primary-text-color); font-size: 12px; line-height: 1.35; padding: 6px 10px; border-radius: 8px; box-shadow: 0 1px 6px rgba(0,0,0,.35); pointer-events: none; }
         .badge:focus-visible, .sect-head:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
-        .titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-        .title { font-size: 16px; font-weight: 500; color: var(--primary-text-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        /* the whole frame left of the badges, however tall they stack; the
+           header centres it vertically, and the text wraps instead of being
+           cut - the journey name is the only thing this zone says */
+        .titles { display: flex; flex-direction: column; gap: 2px; min-width: ${TITLES_MIN}px; flex: 1;
+            align-items: center; text-align: center; }
+        /* anywhere, not break-word: break-word leaves the min-content width at
+           the longest word, so a word wider than the zone was never broken at
+           all - it just hung out over the card's edge */
+        .title { font-size: 16px; font-weight: 500; color: var(--primary-text-color); overflow-wrap: anywhere; }
         .subtitle, .sub, .summary { font-size: 13px; color: var(--secondary-text-color); }
-        .subtitle { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .subtitle { overflow-wrap: anywhere; }
         .spacer { flex-grow: 1; }
         .sect-head { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; border-top: 1px solid var(--divider-color); cursor: pointer; user-select: none; }
         .sect-title { font-size: 14px; font-weight: 500; color: var(--primary-text-color); }
@@ -2353,13 +3019,21 @@ class Gtfs2LiveCard extends HTMLElement {
         .row-badge { min-width: 26px; height: 24px; border-radius: 6px; color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; padding: 0 5px; box-sizing: border-box; flex: none; }
         .mini-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 16px; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 700; padding: 0 3px; vertical-align: middle; }
         .times { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-        .time-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+        /* wrap, so a narrow card drops the destination onto its own line
+           instead of ellipsising it down to a single letter: the row grows by
+           one line rather than saying "C..." where a name belongs */
+        .time-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex-wrap: wrap; }
         .time { font-size: 20px; font-weight: 700; color: var(--primary-text-color); font-variant-numeric: tabular-nums; }
         .day-tag { font-size: 11px; color: var(--secondary-text-color); border: 1px solid var(--divider-color); border-radius: 6px; padding: 0 5px; align-self: center; flex: none; }
         .dest-inline { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .rt-icon { color: #4caf50; display: inline-flex; flex: none; }
         .sub.strike { text-decoration: line-through; }
         .sub { font-size: 12px; }
+        .sub-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; min-width: 0; }
+        /* the merged line reads as a sentence: capital on its first letter,
+           whatever the language, without touching the strings used elsewhere */
+        .sub-line > .sub:first-child::first-letter { text-transform: uppercase; }
+        .dur { white-space: nowrap; }
         .right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: none; }
         .countdown { font-size: 14px; font-weight: 600; color: var(--primary-text-color); }
         .chip { display: inline-flex; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; }
@@ -2372,6 +3046,10 @@ class Gtfs2LiveCard extends HTMLElement {
         .info-chip svg { flex: none; }
         .info-alert { background: rgba(230,81,0,.12); color: #e65100; }
         .empty { padding: 14px 16px; font-size: 13px; color: var(--secondary-text-color); }
+        /* the resting note is written for a tooltip, where it follows the
+           destination in lower case; standing alone on the board it is a
+           sentence and starts like one */
+        .empty.rest::first-letter { text-transform: uppercase; }
         .empty code { font-size: 12px; }
         .map-body { border-top: 0; container-type: inline-size; }
         .map-wrap { position: relative; background: var(--gtfs2-map-background, rgba(127,127,127,.1)); user-select: none; }
@@ -2388,12 +3066,14 @@ class Gtfs2LiveCard extends HTMLElement {
         .stop:hover .dot { transform: scale(1.35); }
         .map-tip { position: absolute; transform: translate(-50%, -100%); pointer-events: none; display: flex; align-items: center; gap: 6px; background: var(--card-background-color, #fff); color: var(--primary-text-color); font-size: 11px; padding: 3px 8px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.3); white-space: nowrap; }
         .tip-links { display: inline-flex; gap: 3px; }
-        .map-btn { position: absolute; top: 8px; left: 8px; border: none; border-radius: 12px; padding: 7px 12px; font-size: 12px; font-weight: 500; font-family: inherit; background: var(--card-background-color, #fff); color: var(--primary-text-color); cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
+        .map-btn { position: absolute; top: 8px; left: 8px; border: none; border-radius: 12px; min-height: 36px; padding: 7px 12px; font-size: 12px; font-weight: 500; font-family: inherit; background: var(--card-background-color, #fff); color: var(--primary-text-color); cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
         .map-ctrl { position: absolute; top: 8px; right: 8px; display: flex; flex-direction: column; gap: 6px; }
         .map-ctrl-btn { width: 36px; height: 36px; border: none; border-radius: 9px; background: var(--card-background-color, #fff); color: var(--primary-text-color); font-size: 18px; font-weight: 600; font-family: inherit; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.2); display: flex; align-items: center; justify-content: center; padding: 0; }
-        .map-scale { position: absolute; left: 8px; bottom: 6px; display: flex; align-items: center; gap: 5px; font-size: 9px; color: var(--secondary-text-color); background: color-mix(in srgb, var(--card-background-color, #fff) 75%, transparent); padding: 1px 5px; border-radius: 6px; pointer-events: none; }
+        .map-foot { position: absolute; left: 8px; right: 8px; bottom: 6px; display: flex; flex-wrap: wrap;
+            align-items: flex-end; justify-content: space-between; gap: 4px 8px; pointer-events: none; }
+        .map-scale { display: flex; align-items: center; gap: 5px; font-size: 9px; color: var(--secondary-text-color); background: color-mix(in srgb, var(--card-background-color, #fff) 75%, transparent); padding: 1px 5px; border-radius: 6px; pointer-events: none; }
         .map-scale i { display: block; height: 4px; border: 1px solid currentColor; border-top: none; box-sizing: border-box; }
-        .map-attrib { position: absolute; right: 8px; bottom: 6px; font-size: 9px; color: var(--secondary-text-color); background: color-mix(in srgb, var(--card-background-color, #fff) 75%, transparent); padding: 1px 5px; border-radius: 6px; }
+        .map-attrib { margin-left: auto; font-size: 9px; color: var(--secondary-text-color); background: color-mix(in srgb, var(--card-background-color, #fff) 75%, transparent); padding: 1px 5px; border-radius: 6px; }
         .map-hint { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,.65); color: #fff; font-size: 12px; padding: 6px 12px; border-radius: 14px; pointer-events: none; opacity: 0; transition: opacity .25s; white-space: nowrap; }
         .map-hint.show { opacity: 1; }
         @media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } .stop .dot, .map-hint, .bus, .bus .hd { transition: none; } }
@@ -2402,7 +3082,7 @@ class Gtfs2LiveCard extends HTMLElement {
         .pop-dest { color: var(--primary-text-color); font-weight: 500; line-height: 1.5; }
         .pop-row { color: var(--secondary-text-color); line-height: 1.5; }
         .pop-row::first-letter { text-transform: uppercase; }
-        .pop-close { border: none; background: none; color: var(--secondary-text-color); cursor: pointer; font-size: 13px; font-family: inherit; min-width: 28px; min-height: 28px; padding: 0; margin: -6px -8px -6px 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; }
+        .pop-close { border: none; background: none; color: var(--secondary-text-color); cursor: pointer; font-size: 13px; font-family: inherit; min-width: 32px; min-height: 32px; padding: 0; margin: -6px -8px -6px 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; }
         .pop-close:hover { background: rgba(127,127,127,.15); }
         .footer { display: flex; align-items: center; justify-content: space-between; padding: 8px 16px 10px 16px; border-top: 1px solid var(--divider-color); font-size: 11px; color: var(--secondary-text-color); }
         `;
@@ -2449,6 +3129,9 @@ class Gtfs2LiveCardEditor extends HTMLElement {
             { name: "max_departures", selector: { number: { min: 1, max: 20, mode: "box" } } },
             { name: "refresh", selector: { number: { min: 15, max: 600, mode: "box", unit_of_measurement: "s" } } },
             { name: "mode_icons", selector: { boolean: {} } },
+            { name: "show_duration", selector: { boolean: {} } },
+            { name: "show_departures", selector: { boolean: {} } },
+            { name: "show_map", selector: { boolean: {} } },
         ];
     }
 
@@ -2517,6 +3200,9 @@ class Gtfs2LiveCardEditor extends HTMLElement {
             this._entForm = document.createElement("ha-form");
             this._entForm.addEventListener("value-changed", (ev) => this._entitiesChanged(ev));
             this.appendChild(this._entForm);
+            // entities Home Assistant no longer knows, with a way out
+            this._orphanBox = document.createElement("div");
+            this.appendChild(this._orphanBox);
             this._globalForm = document.createElement("ha-form");
             this._globalForm.addEventListener("value-changed", (ev) => this._globalChanged(ev));
             this.appendChild(this._globalForm);
@@ -2552,6 +3238,7 @@ class Gtfs2LiveCardEditor extends HTMLElement {
         const ents = this._lines.map((l) => l.entity).filter(Boolean);
         const ejson = JSON.stringify(ents);
         if (ejson !== this._lastEnts) { this._lastEnts = ejson; this._entForm.data = { entities: ents }; }
+        this._renderOrphans(L);
         this._globalForm.hass = this._hass;
         this._globalForm.schema = this._globalSchema();
         this._globalForm.computeLabel = (s) => L[s.name] ?? s.name;
@@ -2560,6 +3247,9 @@ class Gtfs2LiveCardEditor extends HTMLElement {
             max_departures: this._config.max_departures ?? DEFAULTS.max_departures,
             refresh: this._config.refresh ?? DEFAULTS.refresh,
             mode_icons: this._config.mode_icons !== false,
+            show_departures: this._config.show_departures !== false,
+            show_map: this._config.show_map !== false,
+            show_duration: this._config.show_duration === true,
         };
         // reassigning .data re-renders ha-form (and can steal the caret while
         // typing): only push it when a value actually changed
@@ -2603,6 +3293,58 @@ class Gtfs2LiveCardEditor extends HTMLElement {
 
     // the entity picker is the source of truth for which lines exist: keep
     // the overrides of the entities that stay, drop those of the ones removed
+    // A configured entity that Home Assistant no longer has - renamed, or its
+    // integration removed - still shows in the picker above, but as its whole
+    // entity_id rather than a friendly name. A gtfs2 entity_id is long enough
+    // to push that row's clear cross out of the dialog, and then the entity
+    // cannot be removed at all. This strip lists those, in the editor's own
+    // markup, where the name wraps and the button stays reachable.
+    _renderOrphans(L) {
+        const box = this._orphanBox;
+        if (!box) return;
+        const bad = this._lines.map((l) => l.entity)
+            .filter((e) => e && this._hass && !this._hass.states[e]);
+        const key = bad.join("|");
+        if (key === this._lastOrphans) return;
+        this._lastOrphans = key;
+        box.innerHTML = "";
+        if (!bad.length) return;
+        box.style.cssText = "border: 1px solid var(--error-color, #b3261e); border-radius: 10px;"
+            + " padding: 8px 10px; margin-top: 8px;";
+        const hint = document.createElement("div");
+        hint.style.cssText = "color: var(--secondary-text-color); font-size: 12px; margin-bottom: 6px;";
+        hint.textContent = L.orphan_hint || "";
+        box.appendChild(hint);
+        for (const id of bad) {
+            const row = document.createElement("div");
+            row.style.cssText = "display: flex; align-items: center; gap: 8px; padding: 3px 0;";
+            const name = document.createElement("code");
+            // break-all, not break-word: an entity_id is one long token and
+            // break-word would leave it hanging over the edge unbroken
+            name.style.cssText = "flex: 1; min-width: 0; font-size: 12px; word-break: break-all;"
+                + " color: var(--primary-text-color);";
+            name.textContent = id;
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.textContent = L.orphan_remove || "x";
+            btn.style.cssText = "flex: none; min-height: 32px; padding: 0 12px; border-radius: 8px;"
+                + " border: 1px solid var(--error-color, #b3261e); background: none; cursor: pointer;"
+                + " font-family: inherit; font-size: 13px; color: var(--error-color, #b3261e);";
+            btn.addEventListener("click", () => this._dropEntity(id));
+            row.append(name, btn);
+            box.appendChild(row);
+        }
+    }
+
+    _dropEntity(id) {
+        this._lines = this._lines.filter((l) => l.entity !== id);
+        this._lastEnts = null;
+        this._lastOrphans = null;
+        this._buildLines();
+        this._emit();
+        this._render();
+    }
+
     _entitiesChanged(ev) {
         ev.stopPropagation();
         const picked = ev.detail?.value?.entities;
@@ -2610,6 +3352,7 @@ class Gtfs2LiveCardEditor extends HTMLElement {
         const prev = new Map(this._lines.filter((l) => l.entity).map((l) => [l.entity, l]));
         this._lines = picked.map((e) => prev.get(e) || { entity: e });
         this._lastEnts = null;
+        this._lastOrphans = null;
         this._buildLines();
         this._emit();
     }
@@ -2691,7 +3434,16 @@ class Gtfs2LiveCardEditor extends HTMLElement {
             if (v[k] === "" || v[k] == null || !Number.isFinite(num)) delete c[k];
             else c[k] = num;
         }
-        if (has("mode_icons")) { if (v.mode_icons === false) c.mode_icons = false; else delete c.mode_icons; }
+        // true is the default: written out it would only be noise in the YAML
+        for (const k of ["mode_icons", "show_departures", "show_map"]) {
+            if (!has(k)) continue;
+            if (v[k] === false) c[k] = false; else delete c[k];
+        }
+        // the mirror case: false is this one's default, only true is worth
+        // a line of YAML
+        if (has("show_duration")) {
+            if (v.show_duration === true) c.show_duration = true; else delete c.show_duration;
+        }
         this._emit();
     }
 
