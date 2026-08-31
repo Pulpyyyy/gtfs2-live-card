@@ -16,6 +16,7 @@ mark:
 | `hero` | the three lines together, departures board and map |
 | `lines` | one card per line, side by side |
 | `departures` | the board alone, map collapsed |
+| `board` | the departures pane as a table (`departures_view: table`) |
 | `map` | the map alone, vehicles on their shapes |
 | `noposition` | a source with no realtime: the route and its stops, no vehicle |
 | `entete12` | the header at three sizes: badge rows born from the content |
@@ -26,8 +27,8 @@ mark:
 | `editor` | the visual editor, sections open |
 
 The main README uses `hero-light`, `selected-light`, `popup-light`,
-`editor-light`, and every `pip-*` pair (light and dark, switched by the
-reader's theme).
+`board-light`, `editor-light`, and every `pip-*` pair (light and dark,
+switched by the reader's theme).
 
 No personal information is visible: the data is a frozen snapshot of the public
 TAO feed, kept under `data/`.

@@ -282,7 +282,11 @@ function sensor(file, opts = {}) {
       next_delays_realtime: rows.map((r, i) => late[i] ?? r.delay ?? 0),
       // Durée théorique de bout en bout, plausible pour la ligne :
       // l'instantané n'en porte pas, la page en pose comme pour les retards.
-      next_departures_durations: rows.map(() => opts.duration ?? 19),
+      // un tableau donne sa durée à chaque passage (un vrai horaire varie :
+      // heures creuses, détours) ; un nombre vaut pour tous
+      next_departures_durations: rows.map((r, i) => Array.isArray(opts.duration)
+        ? (opts.duration[i] ?? opts.duration[opts.duration.length - 1])
+        : (opts.duration ?? 19)),
       origin_station_stop_name: n.reference.stop_name,
       // La carte coupe cette valeur sur « : » et garde la première moitié,
       // qu'elle affiche ET apparie aux arrêts du tracé. Ce doit donc être
@@ -302,9 +306,9 @@ function sensor(file, opts = {}) {
   return id;
 }
 
-const tramA = sensor("tram-a", { delays: [0, 62, 0, 130, 0, 0], duration: 26 });
-const tramB = sensor("tram-b", { delays: [45, 0, 0, 0, 190, 0], duration: 24 });
-const bus40 = sensor("bus-40", { delays: [0, 0, 95, 0, 0, 0], duration: 19 });
+const tramA = sensor("tram-a", { delays: [0, 62, 0, 130, 0, 0], duration: [26, 26, 31, 26, 28, 26] });
+const tramB = sensor("tram-b", { delays: [45, 0, 0, 0, 190, 0], duration: [24, 27, 24, 24, 30, 24] });
+const bus40 = sensor("bus-40", { delays: [0, 0, 95, 0, 0, 0], duration: [19, 23, 19, 26, 19, 19] });
 
 const hass = {
   locale: { language: lang },
@@ -542,6 +546,15 @@ try {
     stage.style.gridTemplateColumns = "420px";
     card({ lines: [tramA, tramB, bus40], title: "Gare d'Orléans", max_departures: 8, show_duration: true },
          null, null, 420);
+  } else if (page === "board") {
+    // La vue tableau des départs (departures_view: table) : colonnes départ,
+    // arrivée, durée, mode, statut, ligne — chaque durée colorée contre le
+    // meilleur temps de sa propre ligne, tri fixe sur l'heure de départ.
+    // Large exprès : on doit voir les heures groupées à gauche, statut et
+    // ligne calés à droite, la colonne mode absorbant seule le surplus.
+    stage.style.gridTemplateColumns = "640px";
+    card({ lines: [tramA, tramB, bus40], title: "Gare d'Orléans", max_departures: 8,
+           departures_view: "table", show_map: false }, null, null, 640);
   } else if (page === "map") {
     // La carte seule, avec les véhicules de l'instantané sur leur tracé.
     stage.style.gridTemplateColumns = "460px";
@@ -650,7 +663,7 @@ const ready = () => {
   return cards.every((c) => {
     const root = c.shadowRoot;
     if (!root?.querySelector("ha-card")) return false;
-    if (page === "departures") return true;
+    if (page === "departures" || page === "board") return true;
     if (!root.querySelector("svg")) return false;
     // la page popup n'est prête que la bulle ouverte
     if (page === "popup") {

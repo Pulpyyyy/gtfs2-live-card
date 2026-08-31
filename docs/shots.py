@@ -38,6 +38,7 @@ PAGES = {
     "hero":       (560, 920),   # the three lines together, departures and map
     "lines":      (740, 560),   # one card per line, side by side
     "departures": (470, 780),   # the board alone, map collapsed
+    "board":      (680, 470),   # the departures pane as a table (departures_view: table)
     "map":        (520, 620),   # the map alone, vehicles on their shapes
     "noposition": (520, 620),   # a source with no realtime: route drawn anyway
     "entete12":   (560, 760),   # twelve badges, one selected: the full-height text zone

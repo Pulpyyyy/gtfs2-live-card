@@ -8,7 +8,7 @@ A Lovelace card for the [gtfs2](https://github.com/vingerha/gtfs2) Home Assistan
 
 ## Features
 
-- **Departures board**: scheduled and realtime times merged from one or several gtfs2 start/stop sensors, delay chips (on time, +n min), day tags for departures beyond today, stop alerts, colored line badges with destination on every row, and an optional arrival-and-journey-time line per departure (`show_duration`).
+- **Departures board**: scheduled and realtime times merged from one or several gtfs2 start/stop sensors, delay chips (on time, +n min), day tags for departures beyond today, stop alerts, colored line badges with destination on every row, and an optional arrival-and-journey-time line per departure (`show_duration`). The whole pane can switch to a timetable layout (`departures_view: table`): departure, arrival, duration, mode, status and line columns, sorted by departure time.
 - **Line map**: CARTO/OSM tiles following the HA theme (light/dark), route shapes with direction arrows, ordered stops that name themselves once the view is tight enough, origin station pin, and realtime vehicle positions carrying their transport-mode icon with a heading arrow orbiting the marker. Marker size follows the zoom, so a whole-network view stays readable where a dozen vehicles would otherwise clot together. Hovering or tapping a stop names it and lists the other configured lines calling there, and stays quiet when the map already shows the name in full.
 - **Vehicle tracking**: click a vehicle to follow it: animated zoom, passed route dashed in grey, upcoming route in the line color, named next stop, estimated speed in a popup anchored to the marker. The view glides with the vehicle on every refresh and returns to the fitted view with a hint when the vehicle leaves the feed.
 - **Line highlight**: click a line badge to raise that line above the others, filter the departures board and show its origin pin; the header shows the full direction (origin → destination).
@@ -24,6 +24,10 @@ A Lovelace card for the [gtfs2](https://github.com/vingerha/gtfs2) Home Assistan
 
 *Tracking tram 58: the view follows it, the route behind it turns dashed, and the popup names its terminus, its next stop and its speed.*
 
+![Departures as a table](images/board-light.png)
+
+*The same departures laid out as a timetable (`departures_view: table`): arrival, duration, mode and status per run, each duration colored in three steps against the fastest journey to the same destination.*
+
 ## Badge marks
 
 The header shows one badge per line, in the line's official color and label — and the badge is also the line's status display: each corner has a fixed meaning, marked by a small round disc, and every mark carries a tooltip with the exact wording. The discs below are photographed from the card itself, in states produced by real data (a resting sensor, a positions file that does not exist), never redrawn.
@@ -37,8 +41,8 @@ The header shows one badge per line, in the line's official color and label — 
 
 ## Requirements
 
-- Home Assistant with the [gtfs2](https://github.com/vingerha/gtfs2) integration, at least one start/stop route with a GTFS-RT source configured, and the `vehicle_positions > local file` output enabled: gtfs2 writes the vehicle positions GeoJSON under `www/gtfs2/`.
-- The full route shape and ordered stops need the gtfs2 route export (PR [vingerha/gtfs2#174](https://github.com/vingerha/gtfs2/pull/174), or the [Pulpyyyy/gtfs2](https://github.com/Pulpyyyy/gtfs2) fork until it is merged). Without it the card degrades gracefully to dashed per-vehicle traces.
+- Home Assistant with the [gtfs2](https://github.com/vingerha/gtfs2) integration and at least one start/stop route. Live vehicles need a GTFS-RT source with the `vehicle_positions > local file` output enabled: gtfs2 writes the vehicle positions GeoJSON under `www/gtfs2/`. Without realtime the card still draws the departures board, the route shape and its ordered stops.
+- The full route shape and ordered stops need the gtfs2 route export, merged in [vingerha/gtfs2#174](https://github.com/vingerha/gtfs2/pull/174) and shipped since gtfs2 **0.5.9.8**. On older gtfs2 the card degrades gracefully to dashed per-vehicle traces.
 
 ## Installation
 
@@ -73,8 +77,8 @@ lines:
   - entity: sensor.station_line_40_outbound
     line: "40"
     color: "#0072bc"
-    positions_url: /local/gtfs2/NETWORK:Line:40_1.json
-    route_url: /local/gtfs2/NETWORK:Line:40_1_route.json
+    positions_url: /local/gtfs2/network_line_40_1.json
+    route_url: /local/gtfs2/network_line_40_1_route.json
   - sensor.station_line_a_outbound
 ```
 
@@ -89,19 +93,20 @@ lines:
 | `lines` | yes* | List of lines: either plain entity ids (`- sensor.xxx`) or objects `{entity?, positions_url?, route_url?, line?, color?}` overriding the derived values. |
 | `entity` | yes* | Legacy single-sensor form (equivalent to a one-entry `lines`). *Either `lines` or `entity` is required. |
 | `title` | no | Extra title line. Omitted: no title (badges only). `title: ""` also hides it. |
-| `max_departures` | no | Rows on the departures board (default 4). |
-| `refresh` | no | Map polling period in seconds (min 15, default 60). |
 | `mode_icons` | no | Transport-mode chip on the line badges: the card's own glyph for the sensor's route type, or the mdi icon you chose yourself (default `true`). |
-| `show_duration` | no | Arrival time and journey duration on each departure row (“Scheduled 06:03 → 07:07 (1 h 04)”), from the gtfs2 duration attribute or derived from the paired arrival times (default `false`). |
 | `show_departures` | no | The departures pane, header included (default `true`): `false` makes a map-only card. |
+| `departures_view` | no | Departures pane layout: `list` (default), or `table` — departure, arrival, duration, mode, status and line columns, sorted by departure time, a "next departure" line above. Durations are colored in three steps against the fastest journey to the same destination (lines sharing a terminus grade each other). |
+| `max_departures` | no | Rows on the departures board (default 4). |
+| `show_duration` | no | Arrival time and journey duration on each departure row (“→ 07:07 · 1 h 04”), from the gtfs2 duration attribute or derived from the paired arrival times (default `false`). The table layout always carries them. |
 | `show_map` | no | The map pane, header included (default `true`): `false` makes a departures-only card. |
+| `refresh` | no | Map polling period in seconds (min 15, default 60). |
 | `language` | no | `auto` (HA locale), or `en`, `fr`, `de`, `es`, `pt`. |
 | `map_style` | no | `auto` (HA theme), `light`, `dark`, or a custom `{z}/{x}/{y}` tile URL template. |
 | `map_aspect` | no | Map aspect ratio, e.g. `"4/3"` (default `2/1`, switching to `4/3` under 380 px). |
 | `station_color` | no | Origin station marker color (default: the HA accent color). |
 | `line`, `line_color` | no | Badge label and color in the legacy single-sensor form. |
 | `positions_url` | no | Vehicle positions GeoJSON (default: derived from `vehicle_positions_file`, or from `route_id` + `direction_id`). |
-| `route_url` | no | Route GeoJSON (default: `positions_url` with `_route.json`). |
+| `route_url` | no | Route GeoJSON (default: derived from `route_geojson_file`, else `positions_url` with `_route.json`). |
 | `latitude`, `longitude` | no | Explicit station position (default: located on the route via `origin_station_stop_id`). |
 
 Every option above is reachable from the visual editor: the sensors in the entity picker, the common settings in plain sight, and the rest under the "Map appearance", "Per line overrides" and "Advanced" sections. The editor never rewrites a value you did not touch, so a hand-written YAML keeps its shape.
@@ -141,7 +146,7 @@ dashboard.
 ## Limitations
 
 - Without the gtfs2 route export (see Requirements) there is no shape, no ordered stops and no planned-route split: the card falls back on each vehicle's recent trace, dashed.
-- Delays larger than 10 minutes can show twice: the realtime/schedule pairing window is deliberately strict (10 min) so the card never claims a wrong delay. Beyond it, the run appears once as realtime (no scheduled time) and once as schedule only ("no realtime yet").
+- Delays larger than 10 minutes can show twice: the realtime/schedule pairing window is deliberately strict (10 min) so the card never claims a wrong delay. Beyond it, the run appears once as realtime (no scheduled time) and once as schedule only (the grey "scheduled" chip).
 - gtfs2 does not export `speed`, `bearing` or a per-vehicle timestamp in its GeoJSON: heading and speed are estimated from successive positions, so the speed needs the card to have seen at least two distinct positions. For the same reason the card infers how fresh a feed is from the file's `Last-Modified` date rather than from the data itself, which means freshness is known per file, not per vehicle.
 
 ## License

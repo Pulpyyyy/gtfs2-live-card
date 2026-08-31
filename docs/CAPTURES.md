@@ -74,12 +74,14 @@ positions pour servir l'instantané.
 | `hero` | les trois lignes ensemble : départs fusionnés et carte |
 | `lines` | une carte par ligne, badges aux couleurs du réseau |
 | `departures` | le tableau seul, retards et passages théoriques |
+| `board` | les départs en tableau (departures_view: table), durées colorées |
 | `map` | la carte seule, véhicules sur leur tracé |
 | `noposition` | une source sans temps réel : le tracé et ses arrêts, sans véhicule |
 | `entete12` | l'entête à trois tailles : les rangées de cartouches naissent du contenu |
 | `selected` | une ligne choisie par son badge : départs filtrés, tracé mis en avant |
 | `popup` | un véhicule suivi, sa bulle ouverte : terminus, prochain arrêt, vitesse |
 | `narrow` | une colonne étroite, panneau latéral ou téléphone |
+| `editor` | l'éditeur visuel, sections ouvertes |
 | `pips` | les pastilles du README : chaque marque ronde, seule dans sa tuile |
 
 La page `pips` ne garde que la pastille visée de chaque cartouche, par une

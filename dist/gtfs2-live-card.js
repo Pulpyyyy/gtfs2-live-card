@@ -39,6 +39,9 @@ const DEFAULTS = {
     lines: null,              // list of entity_ids and/or {entity?, positions_url?, route_url?, line?, color?}
     mode_icons: true,         // mode chip (mdi) on the line badges
     show_duration: false,     // theoretical journey time on each departure row
+    departures_view: "list",  // list | table: rows, or columns (departure,
+                              // arrival, duration, mode, status, line) sorted
+                              // by departure time
     // A pane can be COLLAPSED, which the card remembers per user, or hidden
     // outright, which is the dashboard's decision and sticks for everyone:
     // a departures-only card in a column, a map-only card next to it.
@@ -1514,11 +1517,21 @@ class Gtfs2LiveCard extends HTMLElement {
             <span class="spacer"></span>
             ${hasRt ? `<span class="live-dot"></span><span class="summary">${this._t("realtime")}</span>` : `<span class="summary">${this._t("scheduled")}</span>`}`;
 
-        const rowsHtml = rows.map((r) => {
+        const rowsHtml = this._config.departures_view === "table"
+            ? this._departuresTableHtml(rows, multi, nextRow, lang, now)
+            : rows.map((r) => {
             const strike = r.rt && r.theo && Math.abs(r.time - r.theo) >= 60000;
-            const sub = r.rt
-                ? (r.theo ? `<span class="sub ${strike ? "strike" : ""}">${this._t("scheduled_at", { t: fmtHM(r.theo) })}</span>` : `<span class="sub">${this._t("realtime")}</span>`)
-                : `<span class="sub">${this._t("no_rt_yet")}</span>`;
+            // the sub-line says only what the big line does not: the schedule
+            // slot when it MOVED (struck through), and the arrival with the
+            // journey time when durations are on. Provenance takes no
+            // sentence - the realtime icon and the right-hand chip already
+            // carry it - so a row with nothing exceptional is a single line.
+            const bits = [];
+            if (strike) bits.push(`<span class="sub strike">${this._t("scheduled_at", { t: fmtHM(r.theo) })}</span>`);
+            if (this._config.show_duration && r.durMin != null) {
+                bits.push(`<span class="sub dur">→ ${fmtHM(new Date(r.time.getTime() + r.durMin * 60000))} · ${fmtDur(r.durMin)}</span>`);
+            }
+            const subLine = bits.length ? `<span class="sub-line">${bits.join("")}</span>` : "";
             let chip;
             if (!r.rt) chip = `<span class="chip chip-theo">${this._t("scheduled")}</span>`;
             else if (r.delayMin == null) chip = "";   // realtime with no known schedule: no claim
@@ -1542,9 +1555,7 @@ class Gtfs2LiveCard extends HTMLElement {
                         ${r.rt ? `<span class="rt-icon">${ICONS.live}</span>` : ""}
                         ${destSub ? `<span class="sub dest-inline">${esc(destSub)}</span>` : ""}
                     </div>
-                    ${this._config.show_duration
-                        ? `<span class="sub-line">${sub}${r.durMin != null ? `<span class="sub dur">→ ${fmtHM(new Date(r.time.getTime() + r.durMin * 60000))} (${fmtDur(r.durMin)})</span>` : ""}</span>`
-                        : sub}
+                    ${subLine}
                 </div>
                 <span class="spacer"></span>
                 <div class="right">
@@ -1593,6 +1604,86 @@ class Gtfs2LiveCard extends HTMLElement {
                 : (restMsg || this._t("none_upcoming")));
         body.innerHTML = (rowsHtml || `<div class="empty${restMsg && !(hiDef && !hiDef.entity) ? " rest" : ""}">${emptyMsg}</div>`)
             + (chips.length ? `<div class="info-strip">${chips.join("")}</div>` : "");
+    }
+
+    /* The same rows laid out as a timetable: departure, arrival, duration,
+     * mode, status and - when several lines share the board - line. The sort
+     * is the departure time's and only its own: columns are read, not
+     * clicked. A "next departure" line stands in for the per-row countdowns,
+     * and its span joins the 30 s tick like any other. */
+    _departuresTableHtml(rows, multi, nextRow, lang, now) {
+        if (!rows.length) return "";
+        // journeys are comparable when they end at the same place: durations
+        // are graded against the fastest run TO THE SAME DESTINATION, so two
+        // lines to Paris rate each other (the slow one reads warm even at its
+        // own usual pace) while lines to different places never do. A sensor
+        // naming no destination falls back to its own line's best.
+        const keyOf = (r) => {
+            const dest = r.def?.entity && this._hass?.states?.[r.def.entity]?.attributes?.destination_station_stop_name;
+            return dest ? "d:" + String(dest).trim().toLowerCase() : "l:" + (r.def ? r.def.idx : -1);
+        };
+        const best = new Map();
+        for (const r of rows) {
+            if (!Number.isFinite(r.durMin)) continue;
+            const k = keyOf(r);
+            if (!best.has(k) || r.durMin < best.get(k)) best.set(k, r.durMin);
+        }
+        const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+        const cells = rows.map((r) => {
+            const tag = dayTag(lang, r.time, now);
+            // the realtime icon sits LEFT of the time: the right edge belongs
+            // to the digits, so times align whether a row carries it or not
+            const dep = (r.rt ? `<span class="rt-icon">${ICONS.live}</span>` : "")
+                + `${tag ? `<span class="day-tag">${esc(tag)}</span> ` : ""}${fmtHM(r.time)}`;
+            // the moved schedule slot has no sub-line here: it rides the tooltip
+            const depTitle = r.rt && r.theo && Math.abs(r.time - r.theo) >= 60000
+                ? ` title="${esc(this._t("scheduled_at", { t: fmtHM(r.theo) }))}"` : "";
+            let arr = "—", dur = "—";
+            if (r.durMin != null) {
+                const at = new Date(r.time.getTime() + r.durMin * 60000);
+                // the arrival names its day only when it differs from the
+                // DEPARTURE's: a night run does not repeat its own date
+                const atag = dayTag(lang, at, r.time);
+                arr = `${atag ? `<span class="day-tag">${esc(atag)}</span> ` : ""}${fmtHM(at)}`;
+                const b = best.get(keyOf(r)) ?? r.durMin;
+                // three frank steps rather than a smooth gradient: a hue that
+                // slides a few degrees reads as noise. Green rides within a
+                // couple of minutes or 15% of the line's best time, orange is
+                // notably slower, red half again as long.
+                const slack = r.durMin - b;
+                const cls = slack <= Math.max(2, b * 0.15) ? "dur-ok"
+                    : r.durMin >= b * 1.5 ? "dur-slow" : "dur-mid";
+                dur = `<b class="${cls}">${fmtDur(r.durMin)}</b>`;
+            }
+            const mode = r.def ? cap(modeWord(lang, r.def.mode || "bus", false)) : "—";
+            let status;
+            if (r.rt && r.delayMin != null && Math.abs(r.delayMin) >= 1) {
+                status = `<b class="${r.delayMin > 0 ? "st-late" : "st-early"}">${r.delayMin > 0 ? "+" : ""}${r.delayMin} min</b>`;
+            } else if (r.rt) {
+                // a realtime run with no matched schedule makes no on-time
+                // claim: the same doctrine as the list's chips, said quietly
+                status = r.delayMin == null
+                    ? `<span class="st-none" title="${esc(this._t("realtime"))}">—</span>`
+                    : `<b class="st-ok" title="${esc(this._t("on_time"))}">—</b>`;
+            } else {
+                status = `<span class="st-none" title="${esc(this._t("no_rt_yet"))}">—</span>`;
+            }
+            const line = multi
+                ? `<td class="fit">${r.def ? `<span class="row-badge" style="background:${esc(r.def.color)}">${esc(this._lineLabelOf(r.def))}</span>` : "—"}</td>`
+                : "";
+            return `<tr><td class="num dep fit"${depTitle}>${dep}</td><td class="num fit">${arr}</td>`
+                + `<td class="num fit">${dur}</td><td>${esc(mode)}</td><td class="st fit">${status}</td>${line}</tr>`;
+        }).join("");
+        const summary = `<div class="board-next">${this._t("next_dep_in", {
+            c: `<span class="countdown" data-ts="${nextRow.time.getTime()}">${fmtCountdown(lang, nextRow.time, now)}</span>`,
+            t: `<b>${fmtHM(nextRow.time)}</b>`,
+        })}</div>`;
+        return summary
+            + `<div class="board-wrap"><table class="board"><thead><tr>`
+            + `<th class="num fit">${this._t("col_departure")}</th><th class="num fit">${this._t("col_arrival")}</th>`
+            + `<th class="num fit">${this._t("col_duration")}</th><th>${this._t("col_mode")}</th>`
+            + `<th class="st fit">${this._t("col_status")}</th>${multi ? `<th class="fit">${this._t("col_line")}</th>` : ""}`
+            + `</tr></thead><tbody>${cells}</tbody></table></div>`;
     }
 
     /* ── PANE 2: MAP data ───────────────────────────────────────────────── */
@@ -2636,6 +2727,10 @@ class Gtfs2LiveCard extends HTMLElement {
         if (!g) return;
         if (!on && g.contains(e.relatedTarget)) return;   // moving between the stop's own circles
         if (on) {
+            // a pressed pointer means a pan, not a visit: stops sliding under
+            // the cursor mid-drag must not resurrect the tip that pointerdown
+            // just hid - THAT tip would then sit still while the map moves
+            if (this._pointers.size) return;
             // the map already names this stop in full and it serves no other
             // line: a tooltip would just print the same words twice over
             if (this._labelIsRedundant(g.dataset)) return;
@@ -2692,6 +2787,9 @@ class Gtfs2LiveCard extends HTMLElement {
 
     _animateViewBox(from, to, dur = 280, ease = null) {
         if (this._anim) cancelAnimationFrame(this._anim);
+        // every animated view change (zoom buttons, recenter, overview,
+        // tracking glide) strands a screen-anchored tip: close it up front
+        this._hideTip();
         // a degenerate box would be rejected by the SVG and strand the map:
         // jump rather than animate through invalid geometry
         if (!(from?.[2] > 0) || !(from[3] > 0) || !(to?.[2] > 0) || !(to[3] > 0)) {
@@ -2876,6 +2974,8 @@ class Gtfs2LiveCard extends HTMLElement {
             return;
         }
         e.preventDefault();
+        // the tip is anchored in screen pixels: a zoom moves its stop away
+        this._hideTip();
         const f = e.deltaY > 0 ? 1.25 : 0.8;
         const rect = svg.getBoundingClientRect();
         const u = this._viewBox[2] / (rect.width || 408);
@@ -3041,6 +3141,34 @@ class Gtfs2LiveCard extends HTMLElement {
         .chip-early { background: rgba(3,105,161,.14); color: #0369a1; }
         .chip-ok { background: rgba(46,125,50,.14); color: var(--gtfs2-ontime-color, #2e7d32); }
         .chip-theo { background: rgba(127,127,127,.14); color: var(--secondary-text-color); }
+        /* the table layout of the board: numbers right, the sort fixed */
+        .board-next { padding: 10px 16px 4px; font-size: 13px; color: var(--secondary-text-color); }
+        .board-next b { color: var(--primary-text-color); }
+        .board-next .countdown { font-size: 13px; }
+        .board-wrap { overflow-x: auto; }
+        .board { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .board th { text-align: left; font-size: 12px; font-weight: 600; color: var(--secondary-text-color); padding: 8px 12px 6px; }
+        .board td { padding: 7px 12px; border-top: 1px solid var(--divider-color); white-space: nowrap; }
+        /* a display board, not a spreadsheet: every column hugs its content
+           (width 1% + nowrap is the shrink-to-fit idiom) and the one elastic
+           column - the mode - absorbs ALL the surplus width. On a wide card
+           the times stay grouped and scannable at the left, status and line
+           stay pinned at the right, instead of the browser smearing the
+           slack a little into every column. */
+        .board .fit { width: 1%; }
+        .board th:first-child, .board td:first-child { padding-left: 16px; }
+        .board th:last-child, .board td:last-child { padding-right: 16px; }
+        .board .num { text-align: right; }
+        .board .st { text-align: center; }
+        .board td.dep { font-weight: 700; }
+        .board td .rt-icon { margin-right: 4px; }
+        .board .dur-ok { color: var(--gtfs2-ontime-color, #2e7d32); }
+        .board .dur-mid { color: var(--gtfs2-late-color, #e65100); }
+        .board .dur-slow { color: var(--error-color, #b3261e); }
+        .board .st-late { color: var(--gtfs2-late-color, #e65100); }
+        .board .st-early { color: #0369a1; }
+        .board .st-ok { color: var(--gtfs2-ontime-color, #2e7d32); }
+        .board .st-none { color: var(--secondary-text-color); }
         .info-strip { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--divider-color); }
         .info-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 8px; font-size: 11px; background: rgba(127,127,127,.12); color: var(--secondary-text-color); }
         .info-chip svg { flex: none; }
@@ -3123,15 +3251,22 @@ class Gtfs2LiveCardEditor extends HTMLElement {
         return [{ name: "entities", selector: { entity: { multiple: true, filter: [{ integration: "gtfs2", domain: "sensor" }] } } }];
     }
 
-    _globalSchema() {
+    // Grouped, and in hierarchical order: what the whole card shows first,
+    // then each pane's switch IMMEDIATELY followed by the options that only
+    // matter while that pane is shown - nothing about a pane appears above
+    // the toggle that brings the pane into existence.
+    _globalSchema(L) {
         return [
             { name: "title", selector: { text: {} } },
-            { name: "max_departures", selector: { number: { min: 1, max: 20, mode: "box" } } },
-            { name: "refresh", selector: { number: { min: 15, max: 600, mode: "box", unit_of_measurement: "s" } } },
             { name: "mode_icons", selector: { boolean: {} } },
-            { name: "show_duration", selector: { boolean: {} } },
             { name: "show_departures", selector: { boolean: {} } },
+            { name: "departures_view", selector: { select: { mode: "dropdown", options: [
+                { value: "list", label: L?.view_list ?? "list" },
+                { value: "table", label: L?.view_table ?? "table" }] } } },
+            { name: "max_departures", selector: { number: { min: 1, max: 20, mode: "box" } } },
+            { name: "show_duration", selector: { boolean: {} } },
             { name: "show_map", selector: { boolean: {} } },
+            { name: "refresh", selector: { number: { min: 15, max: 600, mode: "box", unit_of_measurement: "s" } } },
         ];
     }
 
@@ -3240,7 +3375,7 @@ class Gtfs2LiveCardEditor extends HTMLElement {
         if (ejson !== this._lastEnts) { this._lastEnts = ejson; this._entForm.data = { entities: ents }; }
         this._renderOrphans(L);
         this._globalForm.hass = this._hass;
-        this._globalForm.schema = this._globalSchema();
+        this._globalForm.schema = this._globalSchema(L);
         this._globalForm.computeLabel = (s) => L[s.name] ?? s.name;
         const gdata = {
             title: this._config.title ?? "",
@@ -3250,6 +3385,7 @@ class Gtfs2LiveCardEditor extends HTMLElement {
             show_departures: this._config.show_departures !== false,
             show_map: this._config.show_map !== false,
             show_duration: this._config.show_duration === true,
+            departures_view: this._config.departures_view === "table" ? "table" : "list",
         };
         // reassigning .data re-renders ha-form (and can steal the caret while
         // typing): only push it when a value actually changed
@@ -3443,6 +3579,10 @@ class Gtfs2LiveCardEditor extends HTMLElement {
         // a line of YAML
         if (has("show_duration")) {
             if (v.show_duration === true) c.show_duration = true; else delete c.show_duration;
+        }
+        // list is the default: only the table layout earns a line of YAML
+        if (has("departures_view")) {
+            if (v.departures_view === "table") c.departures_view = "table"; else delete c.departures_view;
         }
         this._emit();
     }
