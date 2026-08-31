@@ -15,6 +15,10 @@ jobs:
       - uses: hacs/action@main
         with:
           category: plugin
+          # hacsjson and images read the repo through unauthenticated raw
+          # urls, which a private repository refuses whatever the files
+          # hold: re-enable both when the repo goes public.
+          ignore: "hacsjson images"
 
   build:
     name: lang parity

@@ -136,7 +136,7 @@ def shoot(chrome, port, page, mode, lang, size, scale, out):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("pages", nargs="*", help=f"pages to shoot (default: all of {', '.join(PAGES)})")
-    ap.add_argument("--lang", default="fr", help="card language (default fr)")
+    ap.add_argument("--lang", default="en", help="card language (default en)")
     ap.add_argument("--mode", choices=["light", "dark", "both"], default="both")
     ap.add_argument("--scale", type=int, default=2, help="device pixel ratio (default 2)")
     args = ap.parse_args()
