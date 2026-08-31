@@ -14,6 +14,7 @@ for the duration of the run.
 """
 
 import argparse
+import functools
 import http.server
 import re
 import os
@@ -40,7 +41,7 @@ PAGES = {
     "map":        (520, 620),   # the map alone, vehicles on their shapes
     "noposition": (520, 620),   # a source with no realtime: route drawn anyway
     "entete12":   (560, 760),   # twelve badges, one selected: the full-height text zone
-    "badges":     (620, 320),   # the badge marks, one per state, README legend
+    "pips":       (1536, 90),   # the round marks in a row, cut into one file each
     "selected":   (540, 900),   # one line picked from its header badge
     "popup":      (520, 640),   # one vehicle tracked, its bubble open
     # Chrome headless will not open a window narrower than ~500 px, so the
@@ -48,6 +49,18 @@ PAGES = {
     "narrow":     (500, 700),   # a sidebar-width column
     "editor":     (460, 900),   # the visual editor, sections open
 }
+
+# The pips page lays the round marks in one row of 72 px tiles, each mark
+# centred in its tile, then four whole badges as corner-position schematics;
+# the sheet is cut into one small file per tile (pip-<name>-<mode>.png),
+# which is what the README's legend table embeds. Each entry is the crop
+# size in CSS px: 44 holds a lone mark, 76 a badge and its overhangs. The
+# names follow the tiles left to right: the order is the harness's.
+PIPS = {"bus": 44, "tram": 44, "metro": 44, "train": 44, "trolleybus": 44,
+        "ferry": 44, "mute": 44, "alert": 44, "works": 44, "incident": 44,
+        "tomorrow": 44, "days": 44, "never": 44,
+        "pos-br": 76, "pos-tl": 76, "pos-tr": 76, "pos-bl": 76}
+PIP_TILE = 88   # CSS px, one tile of the pips page grid
 
 CHROME_CANDIDATES = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -74,10 +87,13 @@ def find_chrome():
 
 def serve(root: Path):
     """Serve `root` on a free port, in a thread, for the run."""
-    handler = type("Quiet", (http.server.SimpleHTTPRequestHandler,), {
+    quiet = type("Quiet", (http.server.SimpleHTTPRequestHandler,), {
         "log_message": lambda *a, **k: None,
-        "directory": str(root),
     })
+    # `directory` is an __init__ argument, not a class attribute: without the
+    # partial the handler serves the current directory, which is only right
+    # when the script is run from the repository root.
+    handler = functools.partial(quiet, directory=str(root))
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -133,6 +149,37 @@ def shoot(chrome, port, page, mode, lang, size, scale, out):
     return out.stat().st_size
 
 
+def crop_pips(sheet, mode, scale):
+    """Cut the pips sheet into one image per round mark.
+
+    The tiles come from the sheet's own width (the stage centres its fixed
+    row), and each mark's centre from its own ink: the crop looks for the
+    pixels that differ from the page background inside the tile rather than
+    trusting a hand-derived offset, so a CSS nudge cannot silently cut a
+    mark in half.
+    """
+    from PIL import Image, ImageChops
+    img = Image.open(sheet).convert("RGB")
+    row = len(PIPS) * PIP_TILE * scale
+    x0 = (img.width - row) // 2
+    bg = Image.new("RGB", img.size, img.getpixel((0, 0)))
+    # > 24 keeps antialiasing and the page background out of the bbox
+    ink = ImageChops.difference(img, bg).convert("L").point(lambda v: v > 24 and 255)
+    total = 0
+    for i, (name, crop) in enumerate(PIPS.items()):
+        tx = x0 + i * PIP_TILE * scale
+        box = ink.crop((tx, 0, tx + PIP_TILE * scale, img.height)).getbbox()
+        if not box:
+            raise SystemExit(f"pips/{mode}: tile {i} ({name}) holds no mark")
+        cx = tx + (box[0] + box[2]) // 2
+        cy = (box[1] + box[3]) // 2
+        half = crop * scale // 2
+        out = IMAGES / f"pip-{name}-{mode}.png"
+        img.crop((cx - half, cy - half, cx + half, cy + half)).save(out)
+        total += out.stat().st_size
+    return total
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("pages", nargs="*", help=f"pages to shoot (default: all of {', '.join(PAGES)})")
@@ -168,6 +215,15 @@ def main():
                 size = measure(chrome, port, page, mode, args.lang, PAGES[page])
                 written = shoot(chrome, port, page, mode, args.lang, size,
                                 args.scale, out)
+                if page == "pips":
+                    # the sheet is scaffolding: what ships is one small file
+                    # per round mark, cut out of it
+                    written = crop_pips(out, mode, args.scale)
+                    out.unlink()
+                    total += written
+                    print(f"  pip-*-{mode}.png           {written / 1024:6.0f} kB  "
+                          f"{len(PIPS)} marks")
+                    continue
                 total += written
                 print(f"  {out.name:26} {written / 1024:6.0f} kB  "
                       f"{size[0]}×{size[1]}")

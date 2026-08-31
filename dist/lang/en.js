@@ -6,10 +6,10 @@
  *   modes:   transport mode names, [singular, plural]
  *   editor:  the visual editor, field labels and section titles
  *
- * English is special in one way: it is also the fallback, so `build.py` copies
- * it INTO dist/gtfs2-live-card.js (tr() is synchronous and needs it before the
- * first frame). Edit it here all the same, then run build.py. Every other
- * language is checked against this file's keys. */
+ * English is special in one way: it is the reference. `python build.py
+ * --check` compares every other language's keys to this file's, section by
+ * section, and the repository's CI fails on the first missing or extra
+ * key. */
 
 export default {
     strings: {

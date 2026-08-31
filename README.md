@@ -24,6 +24,17 @@ A Lovelace card for the [gtfs2](https://github.com/vingerha/gtfs2) Home Assistan
 
 *Tracking tram 58: the view follows it, the route behind it turns dashed, and the popup names its terminus, its next stop and its speed.*
 
+## Badge marks
+
+The header shows one badge per line, in the line's official color and label — and the badge is also the line's status display: each corner has a fixed meaning, marked by a small round disc, and every mark carries a tooltip with the exact wording. The discs below are photographed from the card itself, in states produced by real data (a resting sensor, a positions file that does not exist), never redrawn.
+
+| Position | Marks | Meaning |
+|---|---|---|
+| Bottom right<br><picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-pos-br-dark.png"><img src="images/pip-pos-br-light.png" width="48" alt="a badge, its mode chip bottom right"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-bus-dark.png"><img src="images/pip-bus-light.png" width="44" alt="bus"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-tram-dark.png"><img src="images/pip-tram-light.png" width="44" alt="tram"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-metro-dark.png"><img src="images/pip-metro-light.png" width="44" alt="metro"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-train-dark.png"><img src="images/pip-train-light.png" width="44" alt="train"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-trolleybus-dark.png"><img src="images/pip-trolleybus-light.png" width="44" alt="trolleybus"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-ferry-dark.png"><img src="images/pip-ferry-light.png" width="44" alt="ferry"></picture> | **Transport mode.** The mode glyph derived from the sensor's route type, on a disc in the line's own color — here a bus, a tram under its pantograph, a metro in its tunnel arch, a train of two coupled cars, a trolleybus under its poles, a ferry. Gondola, funicular, monorail, taxi, plane and a generic vehicle complete the set, and an mdi icon you chose yourself always wins over the glyph. Hidden with `mode_icons: false`. |
+| Top left<br><picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-pos-tl-dark.png"><img src="images/pip-pos-tl-light.png" width="48" alt="a desaturated badge, the quiet-source mark top left"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-mute-dark.png"><img src="images/pip-mute-light.png" width="44" alt="quiet source"></picture> | **Quiet source.** The realtime source has stopped answering: the entity is gone from Home Assistant, is unavailable, or the positions file is unreachable or has not been rewritten for 8 minutes. The badge loses its saturation while it lasts; the tooltip says which of the three it is, and for how long. |
+| Top right<br><picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-pos-tr-dark.png"><img src="images/pip-pos-tr-light.png" width="48" alt="a badge, the alert mark top right"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-alert-dark.png"><img src="images/pip-alert-light.png" width="44" alt="disruption"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-works-dark.png"><img src="images/pip-works-light.png" width="44" alt="engineering works"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-incident-dark.png"><img src="images/pip-incident-light.png" width="44" alt="incident"></picture> | **Operator alert.** What the operator publishes about the line (GTFS-RT alert): an exclamation mark for a disruption, a cone for engineering works, a bolt for an incident. The cone and the bolt need gtfs2 to expose the alert cause; without one the generic mark shows — never a cone that would lie about a strike. |
+| Bottom left<br><picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-pos-bl-dark.png"><img src="images/pip-pos-bl-light.png" width="48" alt="a struck-through badge, the rest mark bottom left"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-tomorrow-dark.png"><img src="images/pip-tomorrow-light.png" width="44" alt="resumes tomorrow"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-days-dark.png"><img src="images/pip-days-light.png" width="44" alt="resumes in n days"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-never-dark.png"><img src="images/pip-never-light.png" width="44" alt="no service scheduled"></picture> | **Resting line.** Always paired with the diagonal stroke across the badge: nothing runs on this line today. The mark says when it is back: a dial (resumes tomorrow), a calendar (resumes in *n* days), a cross (no service scheduled at all). |
+
 ## Requirements
 
 - Home Assistant with the [gtfs2](https://github.com/vingerha/gtfs2) integration, at least one start/stop route with a GTFS-RT source configured, and the `vehicle_positions > local file` output enabled: gtfs2 writes the vehicle positions GeoJSON under `www/gtfs2/`.
@@ -80,8 +91,8 @@ lines:
 | `title` | no | Extra title line. Omitted: no title (badges only). `title: ""` also hides it. |
 | `max_departures` | no | Rows on the departures board (default 4). |
 | `refresh` | no | Map polling period in seconds (min 15, default 60). |
-| `mode_icons` | no | Transport-mode chip (mdi icon from the sensor) on the line badges (default `true`). |
-| `show_duration` | no | Arrival time and journey duration on each departure row (“Théorique 06:03 → 07:07 (1 h 04)”), from the gtfs2 duration attribute or derived from the paired arrival times (default `false`). |
+| `mode_icons` | no | Transport-mode chip on the line badges: the card's own glyph for the sensor's route type, or the mdi icon you chose yourself (default `true`). |
+| `show_duration` | no | Arrival time and journey duration on each departure row (“Scheduled 06:03 → 07:07 (1 h 04)”), from the gtfs2 duration attribute or derived from the paired arrival times (default `false`). |
 | `show_departures` | no | The departures pane, header included (default `true`): `false` makes a map-only card. |
 | `show_map` | no | The map pane, header included (default `true`): `false` makes a departures-only card. |
 | `language` | no | `auto` (HA locale), or `en`, `fr`, `de`, `es`, `pt`. |
@@ -109,25 +120,23 @@ Tiles © OpenStreetMap © CARTO (the same basemaps as the native HA map), loaded
 
 ## Translating
 
-The card ships one file, `dist/gtfs2-live-card.js`, which is the file HACS
-serves. That file is generated: the sources are `src/card.js` plus one file per
-language under `src/lang/`, each holding the strings of the card *and* of the
-visual editor.
+The card is served exactly as it sits in `dist/`: `gtfs2-live-card.js` plus
+one file per language under `dist/lang/`, each holding the strings of the card
+*and* of the visual editor. There is no build step — the language files are
+fetched at runtime from wherever the card was installed.
 
-To fix or add a translation, edit `src/lang/<code>.js` and rebuild:
+To fix a translation, edit `dist/lang/<code>.js` and reload the dashboard.
+Then let the parity check confirm nothing drifted:
 
 ```bash
-python build.py           # write dist/gtfs2-live-card.js
-python build.py --check   # verify dist/ matches src/, changing nothing (CI)
+python build.py --check   # every language carries exactly the keys English has
 ```
 
-Adding a language means adding `src/lang/<code>.js` (copy `en.js`, translate the
-values) and its code to `LANGS` in `src/card.js`. The build refuses to run when
-a language is missing a key that English has, or carries one English does not,
-so a half-translated file fails in CI rather than falling back to English on a
-user's dashboard.
-
-Edits made straight to `dist/` are lost at the next build.
+Adding a language means copying `dist/lang/en.js`, translating the values, and
+adding its code to `LANGS` in `dist/gtfs2-live-card.js`. CI runs the same
+check, so a language missing a key that English has, or carrying one English
+does not, fails there rather than showing raw string keys on a user's
+dashboard.
 
 ## Limitations
 

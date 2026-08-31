@@ -76,17 +76,24 @@ positions pour servir l'instantané.
 | `departures` | le tableau seul, retards et passages théoriques |
 | `map` | la carte seule, véhicules sur leur tracé |
 | `noposition` | une source sans temps réel : le tracé et ses arrêts, sans véhicule |
+| `entete12` | l'entête à trois tailles : les rangées de cartouches naissent du contenu |
 | `selected` | une ligne choisie par son badge : départs filtrés, tracé mis en avant |
 | `popup` | un véhicule suivi, sa bulle ouverte : terminus, prochain arrêt, vitesse |
 | `narrow` | une colonne étroite, panneau latéral ou téléphone |
-| `badges` | la légende du README : chaque marque du cartouche dans son état |
+| `pips` | les pastilles du README : chaque marque ronde, seule dans sa tuile |
 
-La page `badges` ne garde que l'entête des cartes, par une feuille injectée
-dans leur shadow root, et ne force **aucun** état par du CSS : la ligne au
-repos reçoit `next_service_in_days`, la ligne muette pointe vers un fichier de
-positions inexistant, la sélection part d'un vrai clic. Ce qui est photographié
-est donc bien ce que le code produit, et la légende ne peut pas mentir sur
-l'apparence réelle.
+La page `pips` ne garde que la pastille visée de chaque cartouche, par une
+feuille injectée dans leur shadow root, et ne force **aucun** état par du
+CSS : la ligne au repos reçoit `next_service_in_days`, la ligne muette pointe
+vers un fichier de positions inexistant, les modes reçoivent leur
+`route_route_type` comme gtfs2 le poserait. Ce qui est photographié est donc
+bien ce que le code produit, et la légende ne peut pas mentir sur l'apparence
+réelle. Cette page déroge au nommage : sa planche est découpée (Pillow) en une
+petite image par pastille, `pip-<nom>-<mode>.png`, celles que le tableau du
+README embarque — chaque découpe se centre sur l'encre de sa tuile plutôt que
+sur une géométrie tenue à la main. Quatre tuiles gardent le cartouche entier,
+marque au bon coin, pour les schémas de position du tableau : là aussi c'est
+une vraie option, `mode_icons: false`, qui isole la marque visée, pas du CSS.
 
 Chaque page existe en `mode=light` et `mode=dark`, et accepte `lang=` (les cinq
 langues de la carte).

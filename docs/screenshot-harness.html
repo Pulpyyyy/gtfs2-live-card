@@ -260,7 +260,7 @@ function sensor(file, opts = {}) {
   const n = network[file];
   const rows = deps[file] || [];
   // `suffix` donne un identifiant distinct à partir du même instantané, ce dont
-  // la page badges a besoin : la même ligne y paraît plusieurs fois, dans des
+  // la page pips a besoin : la même ligne y paraît plusieurs fois, dans des
   // états différents, et deux états ne peuvent pas partager un capteur.
   const id = `sensor.gtfs2_${file.replace("-", "_")}${opts.suffix ? "_" + opts.suffix : ""}`;
 
@@ -432,24 +432,27 @@ try {
     card({ entity: tramA, max_departures: 4 }, "Tram A — Gare d'Orléans", COLORS["tram-a"], 340);
     card({ entity: tramB, max_departures: 4 }, "Tram B — Halmagrand", COLORS["tram-b"], 340);
     card({ entity: bus40, max_departures: 4 }, "Bus 40 — Gare d'Orléans", COLORS["bus-40"], 340);
-  } else if (page === "badges") {
-    /* La légende du README : chaque marque du cartouche dans son état, sur de
-     * vraies lignes et avec les vrais glyphes. Seule l'entête est gardée, le
-     * reste de la carte n'a rien à dire ici.
+  } else if (page === "pips") {
+    /* Les pastilles du README : chaque marque ronde du cartouche, seule et
+     * centrée dans une tuile de 72 px, sur de vraies lignes et avec les vrais
+     * glyphes. shots.py photographie la rangée puis la découpe en une petite
+     * image par pastille, celles que le tableau du README embarque.
      *
      * Les états sont forcés par les données, jamais par du CSS : la ligne au
      * repos reçoit next_service_in_days, la ligne muette pointe vers un
      * fichier de positions qui n'existe pas, ce qui est exactement ce que
-     * voit la carte quand une source disparaît. Ce qui est photographié est
-     * donc bien ce que le code produit. */
-    stage.style.gridTemplateColumns = "300px 300px";
+     * voit la carte quand une source disparaît. Le CSS injecté ne fait que
+     * masquer le cartouche autour de la pastille visée. */
+    stage.style.gridTemplateColumns = `repeat(17, 88px)`;
     stage.style.alignItems = "start";
+    stage.style.padding = "0";
+    stage.style.gap = "0";
 
-    const only = (el) => {
-      // ne garder que l'entête, sans toucher au code : une feuille injectée
-      // dans le shadow root, ce que seul un harnais a le droit de faire.
-      // La carte construit son shadow root quand elle veut, et il n'y a pas
-      // d'évènement pour le dire : on réessaie jusqu'à ce qu'il soit là.
+    const only = (el, keep) => {
+      // ne garder que la pastille visée, sans toucher au code : une feuille
+      // injectée dans le shadow root, ce que seul un harnais a le droit de
+      // faire. La carte construit son shadow root quand elle veut, et il n'y
+      // a pas d'évènement pour le dire : on réessaie jusqu'à ce qu'il soit là.
       const t = setInterval(() => {
         const root = el.shadowRoot;
         if (!root || !root.getElementById("header")) return;
@@ -458,8 +461,20 @@ try {
         const s = document.createElement("style");
         s.dataset.harness = "1";
         s.textContent = "#dep-head, #dep-body, #map-head, #map-body, #footer,"
-          + " #focus-panel { display: none !important }"
-          + " .header { padding-bottom: 18px }";
+          + " #focus-panel, .titles { display: none !important }"
+          // le cadre ha-card est posé en style inline par le stub : seul un
+          // !important le retire
+          + " ha-card { background: none !important; border: none !important;"
+          + " box-shadow: none !important; overflow: visible !important }"
+          + " .header { padding: 6px !important }"
+          // sans `keep`, le cartouche entier reste : ce sont les schémas de
+          // position du tableau. Avec, il s'efface mais garde ses 60 px : la
+          // pastille, remise en flux dans ce carré centrant, tombe au centre
+          + (keep
+            ? " .badge { background: none !important; opacity: 1 !important }"
+              + " .badge-num, .badge-slash, .badge-pip { display: none !important }"
+              + ` .badge-pip.${keep} { display: flex !important; position: static !important }`
+            : "");
         root.appendChild(s);
       }, 40);
       return el;
@@ -482,12 +497,6 @@ try {
       next_service_in_days: -1 } });
     states[restNever].state = "unknown";
     const mute = sensor("bus-40", { suffix: "mute" });
-    const twoA = sensor("tram-a", { suffix: "sel" });
-    const twoB = sensor("tram-b", { suffix: "sel" });
-
-    only(card({ entity: tramA }, "Mode &middot; bas-droite", null, 300));
-    only(card({ entity: mute, positions_url: "data/aucun-fichier.json" },
-              "Source muette &middot; haut-gauche", null, 300));
     // les trois marques d'alerte, haut-droite : la cause vient du flux, et
     // sans cause c'est la marque générique qui sort, jamais un cône qui
     // mentirait sur une grève
@@ -498,30 +507,36 @@ try {
     const alertInc = sensor("tram-b", { suffix: "ali", attributes: {
       destination_stop_alert: "Trafic interrompu", alert_effect: "NO_SERVICE" } });
 
-    only(card({ entity: alertPlain }, "Perturbation &middot; haut-droite", null, 300));
-    only(card({ entity: alertWorks }, "Travaux &middot; c&ocirc;ne", null, 300));
-    only(card({ entity: alertInc }, "Service interrompu &middot; &eacute;clair", null, 300));
-    only(card({ entity: restTomorrow }, "Reprend demain &middot; barre et horloge", null, 300));
-    only(card({ entity: rest }, "Reprend dans 3 jours &middot; barre et calendrier", null, 300));
-    only(card({ entity: restNever }, "Aucun service &middot; barre et croix", null, 300));
-    // le pire cas, celui qu'aucune capture ne montrait : quatre pastilles et
-    // le trait sur un seul cartouche. Le repos éteint la marque muette d'un
-    // fichier figé (ce silence-là est attendu), donc les quatre ne coexistent
-    // que si l'entité est réellement indisponible.
-    const everything = sensor("tram-a", { suffix: "all", attributes: {
-      next_departures: [], next_departures_realtime: [], next_delays_realtime: [],
-      origin_stop_alert: "Travaux, arrêt déplacé", alert_cause: "CONSTRUCTION",
-      next_service_in_days: 2, next_service_date: "2026-08-26" } });
-    states[everything].state = "unavailable";
-    only(card({ entity: everything, positions_url: "data/aucun-fichier.json" },
-              "Tout &agrave; la fois &middot; quatre pastilles et le trait", null, 300));
+    // six modes en exemple : le glyphe suit route_type (l'attribut est posé
+    // comme gtfs2 le poserait), la couleur du disque celle de la ligne
+    const modeOf = (file, rt, sfx) => sensor(file,
+      { suffix: "m" + sfx, attributes: { route_route_type: rt } });
 
-    const pair = only(card({ lines: [twoA, twoB] }, "S&eacute;lection &middot; anneau et att&eacute;nuation", null, 300));
-    // sélectionner la première ligne : c'est un clic, comme pour un lecteur
-    setTimeout(() => {
-      const b = pair.shadowRoot?.querySelector(".badge.clickable");
-      if (b) b.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
-    }, 400);
+    // l'ordre des tuiles est le contrat de découpe : PIPS, dans shots.py,
+    // nomme les fichiers dans ce même ordre
+    only(card({ entity: modeOf("bus-40", 3, "bus") }, null, null, 88), "mode");
+    only(card({ entity: modeOf("tram-a", 0, "tram") }, null, null, 88), "mode");
+    only(card({ entity: modeOf("tram-b", 1, "metro") }, null, null, 88), "mode");
+    only(card({ entity: modeOf("bus-40", 2, "train") }, null, null, 88), "mode");
+    only(card({ entity: modeOf("tram-a", 11, "trolley") }, null, null, 88), "mode");
+    only(card({ entity: modeOf("tram-b", 4, "ferry") }, null, null, 88), "mode");
+    only(card({ entity: mute, positions_url: "data/aucun-fichier.json" },
+              null, null, 88), "mute");
+    only(card({ entity: alertPlain }, null, null, 88), "alert");
+    only(card({ entity: alertWorks }, null, null, 88), "alert");
+    only(card({ entity: alertInc }, null, null, 88), "alert");
+    only(card({ entity: restTomorrow }, null, null, 88), "svc");
+    only(card({ entity: rest }, null, null, 88), "svc");
+    only(card({ entity: restNever }, null, null, 88), "svc");
+    // les schémas de position : le cartouche entier, sa marque au bon coin.
+    // mode_icons: false — une vraie option, pas du CSS — retire la puce de
+    // mode des trois coins qui ne parlent pas d'elle, pour qu'un seul disque
+    // désigne le coin dont la rangée du tableau parle.
+    only(card({ entity: tramA }, null, null, 88), null);
+    only(card({ entity: mute, positions_url: "data/aucun-fichier.json",
+                mode_icons: false }, null, null, 88), null);
+    only(card({ entity: alertPlain, mode_icons: false }, null, null, 88), null);
+    only(card({ entity: rest, mode_icons: false }, null, null, 88), null);
   } else if (page === "departures") {
     // Le tableau seul, carte repliée : retards, passages théoriques, jours.
     stage.style.gridTemplateColumns = "420px";
@@ -625,12 +640,12 @@ const ready = () => {
   }
   const cards = [...stage.querySelectorAll("gtfs2-live-card")];
   if (!cards.length) return false;
-  if (page === "badges") {
+  if (page === "pips") {
     // la page ne vaut que si les états qu'elle illustre sont bien là : la
-    // pastille muette attend l'échec du fetch, l'anneau attend le clic
+    // pastille muette attend l'échec du fetch de son fichier de positions
     const has = (sel) => cards.some((c) => c.shadowRoot?.querySelector(sel));
     return cards.every((c) => c.shadowRoot?.querySelector(".badge"))
-      && has(".badge-pip.mute") && has(".badge-slash") && has(".badge.sel");
+      && has(".badge-pip.mute") && has(".badge-pip.alert") && has(".badge-pip.svc");
   }
   return cards.every((c) => {
     const root = c.shadowRoot;
