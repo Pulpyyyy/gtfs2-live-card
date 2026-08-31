@@ -42,7 +42,7 @@ The header shows one badge per line, in the line's official color and label — 
 ## Requirements
 
 - Home Assistant with the [gtfs2](https://github.com/vingerha/gtfs2) integration and at least one start/stop route. Live vehicles need a GTFS-RT source with the `vehicle_positions > local file` output enabled: gtfs2 writes the vehicle positions GeoJSON under `www/gtfs2/`. Without realtime the card still draws the departures board, the route shape and its ordered stops.
-- The full route shape and ordered stops need the gtfs2 route export, merged in [vingerha/gtfs2#174](https://github.com/vingerha/gtfs2/pull/174) and shipped since gtfs2 **0.5.9.8**. On older gtfs2 the card degrades gracefully to dashed per-vehicle traces.
+- The full route shape and ordered stops need the gtfs2 route export, merged in [vingerha/gtfs2#174](https://github.com/vingerha/gtfs2/pull/174) and shipped since gtfs2 **0.5.9.8**. On older gtfs2 the card degrades gracefully to dashed per-vehicle traces. That release also lowercases and sanitises the two file names, so `ORLEANS:Line:A` direction 0 is served as `orleans_line_a_0.json`; the card derives the same names, and the files written under the old ones stay behind until they are deleted once by hand.
 
 ## Installation
 
@@ -105,8 +105,8 @@ lines:
 | `map_aspect` | no | Map aspect ratio, e.g. `"4/3"` (default `2/1`, switching to `4/3` under 380 px). |
 | `station_color` | no | Origin station marker color (default: the HA accent color). |
 | `line`, `line_color` | no | Badge label and color in the legacy single-sensor form. |
-| `positions_url` | no | Vehicle positions GeoJSON (default: derived from `vehicle_positions_file`, or from `route_id` + `direction_id`). |
-| `route_url` | no | Route GeoJSON (default: derived from `route_geojson_file`, else `positions_url` with `_route.json`). |
+| `positions_url` | no | Vehicle positions GeoJSON (default: derived from `vehicle_positions_file`, or from `route_id` + `direction_id`, spelled the way gtfs2 names the file: lowercased, anything outside letters, digits, dot, dash and underscore replaced by `_`). |
+| `route_url` | no | Route GeoJSON (default: derived from `route_geojson_file`, else the same `route_id` + `direction_id` name with `_route.json`, else `positions_url` with `_route.json`). |
 | `latitude`, `longitude` | no | Explicit station position (default: located on the route via `origin_station_stop_id`). |
 
 Every option above is reachable from the visual editor: the sensors in the entity picker, the common settings in plain sight, and the rest under the "Map appearance", "Per line overrides" and "Advanced" sections. The editor never rewrites a value you did not touch, so a hand-written YAML keeps its shape.

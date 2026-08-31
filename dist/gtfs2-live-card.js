@@ -428,6 +428,15 @@ const attrVal = (at, ...names) => {
     return null;
 };
 
+// a route or direction id, spelled the way gtfs2 spells it in a file name.
+// Both geojson files are named after ids that come out of the datasource, so
+// the integration keeps letters, digits, dot, dash and underscore, replaces
+// every run of the rest with a single underscore and lowercases the result
+// (safe_file_part, gtfs2 0.5.9.8). A url derived here has to follow the same
+// rule or it 404s on any feed whose route_id carries a colon: "ORLEANS:Line:A"
+// direction 0 is served as "orleans_line_a_0.json".
+const safeFilePart = (v) => String(v).toLowerCase().replace(/[^a-z0-9._-]+/g, "_").replace(/\.\.+/g, "_");
+
 // lighten a #rrggbb color towards white (used to tell the two directions
 // of a line apart when both derive the same GTFS route_color)
 const lighten = (hex, f) => {
@@ -745,7 +754,7 @@ class Gtfs2LiveCard extends HTMLElement {
                     else if (rfile) purl = cached?.pnamed ? cached.purl : null;
                     // no file named either way: an older gtfs2, where the
                     // route and direction attributes are all there is to go on
-                    else if (rid != null && dir != null) purl = `/local/gtfs2/${rid}_${dir}.json`;
+                    else if (rid != null && dir != null) purl = `/local/gtfs2/${safeFilePart(rid)}_${safeFilePart(dir)}.json`;
                     else purl = cached?.purl || null;
                 }
                 if (!rurl) {
@@ -754,7 +763,7 @@ class Gtfs2LiveCard extends HTMLElement {
                     // the route/direction guess, which only has to serve a
                     // source publishing no positions at all
                     else if (file) rurl = "/local/gtfs2/" + file.replace(/\.json$/, "_route.json");
-                    else if (rid != null && dir != null) rurl = `/local/gtfs2/${rid}_${dir}_route.json`;
+                    else if (rid != null && dir != null) rurl = `/local/gtfs2/${safeFilePart(rid)}_${safeFilePart(dir)}_route.json`;
                     else rurl = cached?.rurl || null;
                 }
                 const patch = {};
