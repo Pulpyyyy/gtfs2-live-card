@@ -53,7 +53,7 @@ The header shows one badge per line, in the line's official color and label — 
 
 ### Manual
 
-1. Copy `dist/gtfs2-live-card.js` into `config/www/`.
+1. Copy `dist/gtfs2-live-card.js` **and the `dist/lang/` folder** into `config/www/`: the card fetches its languages from `lang/` next to itself.
 2. Settings, Dashboards, **Resources**: add `/local/gtfs2-live-card.js` as a *JavaScript module*.
 
 ## Configuration
