@@ -17,14 +17,13 @@ jobs:
           category: plugin
 
   build:
-    name: dist matches src
+    name: lang parity
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      # HACS serves dist/gtfs2-live-card.js and nothing else, so a dist built
-      # from stale sources ships to every user. This also fails when a
-      # language file is missing a key that English has.
+      # dist/ is the source, served as is by HACS; what can drift is the five
+      # language files, so fail when one misses or adds a key vs English.
       - run: python build.py --check
