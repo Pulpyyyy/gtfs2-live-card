@@ -857,6 +857,10 @@ class Gtfs2LiveCard extends HTMLElement {
     connectedCallback() {
         this._startPolling();
         if (!this._tick30) this._tick30 = setInterval(() => this._tickRelative(), 30000);
+        // Home Assistant re-attaches a view's elements as they were left, and
+        // the hass setter redraws nothing unless the sensor changed meanwhile:
+        // the countdowns, expired rows and footer catch up now, not 30 s later
+        if (this._built) this._tickRelative();
         if (!this._visHandler) {
             this._visHandler = () => { if (!document.hidden) this._fetchAll(); };
             document.addEventListener("visibilitychange", this._visHandler);
