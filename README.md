@@ -9,7 +9,7 @@ A Lovelace card for the [gtfs2](https://github.com/vingerha/gtfs2) Home Assistan
 ## Features
 
 - **Departures board**: scheduled and realtime times merged from one or several gtfs2 start/stop sensors, delay chips (on time, +n min), day tags for departures beyond today, stop alerts, colored line badges with destination on every row, and an optional arrival-and-journey-time line per departure (`show_duration`). The whole pane can switch to a timetable layout (`departures_view: table`): departure, arrival, duration, mode, status and line columns, sorted by departure time.
-- **Line map**: CARTO/OSM tiles following the HA theme (light/dark), route shapes with direction arrows, ordered stops that name themselves once the view is tight enough, origin station pin, and realtime vehicle positions carrying their transport-mode icon with a heading arrow orbiting the marker. Marker size follows the zoom, so a whole-network view stays readable where a dozen vehicles would otherwise clot together. Hovering or tapping a stop names it and lists the other configured lines calling there, and stays quiet when the map already shows the name in full.
+- **Line map**: a vector base map (MapLibre, VersaTiles styles on OpenStreetMap data) following the HA theme (light/dark), route shapes with direction arrows, ordered stops that name themselves once the view is tight enough, origin station pin, and realtime vehicle positions carrying their transport-mode icon with a heading arrow orbiting the marker. Marker size follows the zoom, so a whole-network view stays readable where a dozen vehicles would otherwise clot together. Hovering or tapping a stop names it and lists the other configured lines calling there, and stays quiet when the map already shows the name in full.
 - **Vehicle tracking**: click a vehicle to follow it: animated zoom, passed route dashed in grey, upcoming route in the line color, named next stop, estimated speed in a popup anchored to the marker. The view glides with the vehicle on every refresh and returns to the fitted view with a hint when the vehicle leaves the feed.
 - **Line highlight**: click a line badge to raise that line above the others, filter the departures board and show its origin pin; the header shows the full direction (origin → destination).
 - **Minimal YAML**: a list of gtfs2 sensors is enough. Everything else (positions file, route file, official line name, official route color, transport mode and its icon, origin station) derives from the sensor attributes, and is remembered across page reloads so an out-of-service line keeps its identity at night. Any explicit YAML value always wins over a derived one.
@@ -101,7 +101,7 @@ lines:
 | `show_map` | no | The map pane, header included (default `true`): `false` makes a departures-only card. |
 | `refresh` | no | Map polling period in seconds (min 15, default 60). |
 | `language` | no | `auto` (HA locale), or `en`, `fr`, `de`, `es`, `pt`. |
-| `map_style` | no | `auto` (HA theme), `light`, `dark`, or a custom `{z}/{x}/{y}` tile URL template. |
+| `map_style` | no | `auto` (HA theme), `light` (graybeard), `dark` (shadow), or your own base map: a MapLibre style JSON URL, or a raster `{z}/{x}/{y}` tile URL template (shown as it comes, no theme). |
 | `map_aspect` | no | Map aspect ratio, e.g. `"4/3"` (default `2/1`, switching to `4/3` under 380 px). |
 | `station_color` | no | Origin station marker color (default: the HA accent color). |
 | `line`, `line_color` | no | Badge label and color in the legacy single-sensor form. |
@@ -121,7 +121,7 @@ The collapsed/expanded state of each pane is remembered per card (localStorage).
 - Click a vehicle to track it, click a line badge to highlight the line. Badges, section headers and vehicle markers are keyboard operable (Tab + Enter).
 - **Leaving tracking**: the popup cross, `Escape` or a tap on the map background release the vehicle and leave the map where it is. Clicking a line badge, or the "Overview" button, resets the view to the fitted one.
 
-Tiles © OpenStreetMap © CARTO (the same basemaps as the native HA map), loaded directly by the browser. The tile layer is only rebuilt when the visible area changes, requests are shared between cards showing the same line, polling pauses when the tab is hidden and slows down while the map pane is collapsed.
+The base map is drawn by [MapLibre GL](https://maplibre.org/) (loaded from jsDelivr, once per page) with the [VersaTiles](https://versatiles.org/) styles graybeard (light) and shadow (dark) on their public vector tiles, © OpenStreetMap contributors; building footprints are left out so the lines stay readable at street level. The browser fetches the library, the style, the tiles, the fonts and the sprites itself: it needs the internet. Without WebGL or without the library the routes and vehicles still draw, on a plain background, and the footer says why. Requests are shared between cards showing the same line, polling pauses when the tab is hidden and slows down while the map pane is collapsed.
 
 ## Translating
 

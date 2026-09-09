@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.0.0";
+const CARD_VERSION = "1.1.0";
 
 console.info(
     `%c 🧭 GTFS2 Live Card %c v${CARD_VERSION} %c`,
@@ -11,7 +11,7 @@ console.info(
  * GTFS2 Live Card: two collapsible panes,
  *   1. departures merged from one or several gtfs2 start/stop sensors
  *      (schedule + realtime + delays, line badges, alerts)
- *   2. a slippy map (CARTO/OSM tiles, Web-Mercator) of one or several lines:
+ *   2. a slippy map (OpenStreetMap tiles, Web-Mercator) of one or several lines:
  *      route shapes with direction arrows, stops, origin stations, realtime
  *      vehicles; per-bus focus and per-line highlight from the header badges
  *
@@ -131,8 +131,32 @@ const bezier = (x1, y1, x2, y2) => {
     };
 };
 const EASE_OUT = bezier(0, 0, 0.58, 1);   // CSS "ease-out"
-const TILE_LIGHT = "https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png";
-const TILE_DARK = "https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
+// The base map is MapLibre GL, loaded once per page from a CDN, drawing the
+// VersaTiles styles on their public vector tiles (Shortbread schema,
+// OpenStreetMap data, CORS open, no key): graybeard in the light theme,
+// shadow in the dark one. The card keeps its own camera (the SVG viewBox)
+// and MapLibre follows it, so the overlay's geometry, gestures and
+// animations are untouched: the canvas only replaced the raster tiles.
+const MAPLIBRE_VERSION = "6.9.0";
+const MAPLIBRE_JS = `https://cdn.jsdelivr.net/npm/maplibre-gl@${MAPLIBRE_VERSION}/dist/maplibre-gl.mjs`;
+const MAPLIBRE_CSS = `https://cdn.jsdelivr.net/npm/maplibre-gl@${MAPLIBRE_VERSION}/dist/maplibre-gl.css`;
+const MAP_STYLES = {
+    light: "https://tiles.versatiles.org/assets/styles/graybeard/style.json",
+    dark: "https://tiles.versatiles.org/assets/styles/shadow/style.json",
+};
+const MAP_CREDIT = "© OpenStreetMap contributors";
+// source layers left out of the styles: building footprints load the picture
+// at street zooms without helping to read a line
+const MAP_HIDE_LAYERS = new Set(["buildings"]);
+let MAPLIBRE = null;          // promise of the module namespace, shared by every card on the page
+function loadMapLibre() {
+    if (!MAPLIBRE) {
+        MAPLIBRE = import(MAPLIBRE_JS).then((m) => m.default || m);
+        // a failed load (offline, blocked CDN) is retried by the next map build
+        MAPLIBRE.catch(() => { MAPLIBRE = null; });
+    }
+    return MAPLIBRE;
+}
 
 /* ── i18n ───────────────────────────────────────────────────────────────── */
 
@@ -580,7 +604,11 @@ class Gtfs2LiveCard extends HTMLElement {
         this._rerenderTimer = null;
         this._mPerUNow = 1;
         this._mapDomReady = false;
-        this._tileKey = null;
+        this._map = null;                 // the MapLibre instance under the SVG, while the pane is built
+        this._mapGen = 0;                 // bumped at every teardown: a module that lands late builds nothing
+        this._mapStyleKey = null;         // style MapLibre was last asked to draw (theme, or the custom value)
+        this._mapCredit = null;           // attribution read from the loaded style's sources
+        this._mapError = null;            // why there is no base map, for the footer
         this._lastW = 0;
         this._scaleW = 0;                 // cached svg box (avoids a layout read on every animation frame)
         this._scaleH = 0;
@@ -621,6 +649,7 @@ class Gtfs2LiveCard extends HTMLElement {
             if (typeof saved.map === "boolean") this._collapsed.map = saved.map;
         } catch (e) { /* localStorage unavailable: keep defaults */ }
         this._built = false;
+        this._dropBasemap();
         this._mapDomReady = false;
         if (this._hass) this._update();
     }
@@ -641,7 +670,7 @@ class Gtfs2LiveCard extends HTMLElement {
                 if (this._defsCache) this._defsCache.hass = hass;
                 return;
             }
-            if (themeFlip) { this._tileKey = null; this._scheduleRerender(); }
+            if (themeFlip) this._scheduleRerender();
             if (langFlip) this._lastEntityState = null;
         }
         this._update();
@@ -855,6 +884,9 @@ class Gtfs2LiveCard extends HTMLElement {
     /* ── DOM LIFECYCLE ──────────────────────────────────────────────────── */
 
     connectedCallback() {
+        // the base map was released when the view went away (see below):
+        // a pane still standing in the cached DOM gets it back
+        if (this._mapDomReady && !this._map) this._buildBasemap();
         this._startPolling();
         if (!this._tick30) this._tick30 = setInterval(() => this._tickRelative(), 30000);
         // Home Assistant re-attaches a view's elements as they were left, and
@@ -876,6 +908,9 @@ class Gtfs2LiveCard extends HTMLElement {
 
     disconnectedCallback() {
         LANG_WAITING.delete(this);
+        // a WebGL context is a scarce thing (a browser holds a dozen or so):
+        // a view Home Assistant keeps cached off-screen must not sit on one
+        this._dropBasemap();
         this._stopPolling();
         if (this._tick30) { clearInterval(this._tick30); this._tick30 = null; }
         if (this._visHandler) { document.removeEventListener("visibilitychange", this._visHandler); this._visHandler = null; }
@@ -961,11 +996,16 @@ class Gtfs2LiveCard extends HTMLElement {
         // a line crosses the 8-minute line without any fetch happening: the
         // file is still answering, its date simply stopped moving
         this._repaintHeaderIfMuteChanged();
-        const at = this.shadowRoot.querySelector(".map-attrib");
-        if (at) {
-            const newestAt = Math.max(0, ...this._ld.map((s) => s.sigAt || 0));
-            at.textContent = this._t("map_updated", { t: newestAt ? fmtAgo(this._lang(), Date.now() - newestAt) : "…" });
-        }
+        this._updateAttrib();
+    }
+
+    // the map's credit line: what the loaded style's sources ask for (OSM's
+    // due, by default), or why there is no base map at all
+    _attribText(newestAt) {
+        const upd = this._t("map_updated", { t: newestAt ? fmtAgo(this._lang(), Date.now() - newestAt) : "…" });
+        if (this._mapError) return `${this._t("map_no_base")} · ${upd}`;
+        const credit = this._mapCredit ?? (this._mapStyleSpec().own ? MAP_CREDIT : "");
+        return credit ? `${credit} · ${upd}` : upd;
     }
 
     /* ── LOVELACE API ───────────────────────────────────────────────────── */
@@ -1036,7 +1076,9 @@ class Gtfs2LiveCard extends HTMLElement {
     /* ── SHELL ──────────────────────────────────────────────────────────── */
 
     _buildShell() {
+        this._dropBasemap();              // its container goes with the old shell
         this.shadowRoot.innerHTML = `
+        <link rel="stylesheet" href="${MAPLIBRE_CSS}">
         <style>${this._styles()}</style>
         <ha-card>
             <div id="header" class="header"></div>
@@ -2031,11 +2073,135 @@ class Gtfs2LiveCard extends HTMLElement {
         return pts;
     }
 
-    _tileTemplate() {
+    /* ── PANE 2: MAP base map (MapLibre under the SVG) ──────────────────── */
+
+    // what MapLibre is asked to draw: the theme's style, or the user's own -
+    // a MapLibre style URL, or a raster {z}/{x}/{y} template wrapped into a
+    // one-layer style (shown as it comes: no theme, no credit of ours)
+    _mapStyleSpec() {
         const style = this._config.map_style;
-        if (style && style !== "auto" && style !== "light" && style !== "dark") return style;
-        const dark = style === "dark" || (style !== "light" && !!this._hass?.themes?.darkMode);
-        return dark ? TILE_DARK : TILE_LIGHT;
+        if (!style || style === "auto" || style === "light" || style === "dark") {
+            const dark = style === "dark" || (style !== "light" && !!this._hass?.themes?.darkMode);
+            return { key: dark ? "dark" : "light", style: dark ? MAP_STYLES.dark : MAP_STYLES.light, own: true };
+        }
+        if (/\{z\}/.test(style)) {
+            const tiles = [style.replace("{r}", "")];
+            return { key: style, own: false, style: { version: 8, sources: { raster: { type: "raster", tiles, tileSize: 256 } }, layers: [{ id: "raster", type: "raster", source: "raster" }] } };
+        }
+        return { key: style, own: false, style };
+    }
+
+    // the MapLibre canvas under the SVG. Built once the module is in (a
+    // moment on a cold cache), and only if the pane still stands by then.
+    _buildBasemap() {
+        const wrap = this.shadowRoot.querySelector(".map-wrap");
+        const host = wrap?.querySelector(".map-gl");
+        if (!host || this._map) return;
+        const gen = ++this._mapGen;
+        loadMapLibre().then((ML) => {
+            if (gen !== this._mapGen || !host.isConnected || this._map) return;
+            const spec = this._mapStyleSpec();
+            let map;
+            try {
+                map = new ML.Map({
+                    container: host, style: spec.style, interactive: false, attributionControl: false,
+                    renderWorldCopies: false, fadeDuration: 150,
+                });
+            } catch (e) {
+                // no WebGL: a browser flag, or an exhausted context pool
+                this._mapError = e?.message || "webgl";
+                this._updateAttrib();
+                return;
+            }
+            this._map = map;
+            this._mapStyleKey = spec.key;
+            this._mapError = null;
+            this._mapCredit = null;
+            wrap.dataset.basemap = "loading";
+            map.on("style.load", () => this._basemapStyled(map));
+            map.on("error", (e) => {
+                // a tile missing here or there is MapLibre's business; a
+                // style that never comes is what leaves the map blank
+                if (!map.isStyleLoaded() && !this._mapError) {
+                    this._mapError = e?.error?.message || "style";
+                    this._updateAttrib();
+                }
+            });
+            map.on("dataloading", () => { wrap.dataset.basemap = "loading"; });
+            map.on("idle", () => { wrap.dataset.basemap = "idle"; });
+            this._syncBasemap();
+        }).catch((e) => {
+            if (gen !== this._mapGen) return;
+            this._mapError = e?.message || "import";
+            this._updateAttrib();
+        });
+    }
+
+    // a style just landed (first one, or a theme flip): drop the layers the
+    // card does without, and read the credit its sources ask for
+    _basemapStyled(map) {
+        const st = map.getStyle();
+        for (const l of st?.layers || []) if (MAP_HIDE_LAYERS.has(l["source-layer"])) map.removeLayer(l.id);
+        const credits = [];
+        for (const [id, src] of Object.entries(st?.sources || {})) {
+            const a = String(map.getSource(id)?.attribution ?? src.attribution ?? "").replace(/<[^>]*>/g, "").trim();
+            if (a && !credits.includes(a)) credits.push(a);
+        }
+        this._mapCredit = credits.join(" · ");
+        this._mapError = null;
+        this._updateAttrib();
+    }
+
+    _dropBasemap() {
+        this._mapGen++;
+        if (this._map) {
+            try { this._map.remove(); } catch (e) { /* its container is already gone */ }
+            this._map = null;
+        }
+        this._mapStyleKey = null;
+        this._mapCredit = null;
+    }
+
+    // the pane's body replaced by something that is not a map
+    _clearMap(body, html) {
+        this._dropBasemap();
+        body.innerHTML = html;
+        this._mapDomReady = false;
+    }
+
+    // theme flips and an edited map_style land here on the next render
+    _applyBasemapStyle() {
+        const map = this._map;
+        if (!map) return;
+        const spec = this._mapStyleSpec();
+        if (spec.key === this._mapStyleKey) return;
+        this._mapStyleKey = spec.key;
+        this._mapCredit = null;
+        map.setStyle(spec.style);
+    }
+
+    // MapLibre follows the SVG camera: the viewBox, sliced to the element's
+    // box (preserveAspectRatio xMidYMid slice), is a centre and a zoom.
+    // MapLibre counts 512 px tiles: the world is 512 * 2^zoom css px wide.
+    _syncBasemap() {
+        const map = this._map;
+        const vb = this._viewBox, O = this._origin;
+        if (!map || !vb || !O) return;
+        if (!this._scaleW || !this._scaleH) {
+            const svg = this.shadowRoot.querySelector(".map-wrap svg");
+            this._scaleW = svg?.clientWidth || 408;
+            this._scaleH = svg?.clientHeight || 204;
+        }
+        const s = Math.max(this._scaleW / vb[2], this._scaleH / vb[3]);   // css px per world unit
+        const cx = O.x + vb[0] + vb[2] / 2, cy = O.y + vb[1] + vb[3] / 2;
+        map.jumpTo({ center: [(cx / WORLD) * 360 - 180, this._latOf(cy)], zoom: Math.log2((s * WORLD) / 512) });
+    }
+
+    _updateAttrib() {
+        const at = this.shadowRoot.querySelector(".map-attrib");
+        if (!at) return;
+        const newestAt = Math.max(0, ...this._ld.map((s) => s.sigAt || 0));
+        at.textContent = this._attribText(newestAt);
     }
 
     _liveBusCount() {
@@ -2061,8 +2227,7 @@ class Gtfs2LiveCard extends HTMLElement {
         const body = this.shadowRoot.getElementById("map-body");
         if (this._config.show_map === false) {
             head.style.display = "none";
-            body.innerHTML = "";
-            this._mapDomReady = false;
+            this._clearMap(body, "");
             this.shadowRoot.getElementById("focus-panel").innerHTML = "";
             return;
         }
@@ -2079,8 +2244,7 @@ class Gtfs2LiveCard extends HTMLElement {
                 <span class="sect-title">${this._t("line_map")}</span>
                 <span class="spacer"></span>
                 ${summary}`;
-            body.innerHTML = "";
-            this._mapDomReady = false;
+            this._clearMap(body, "");
             this.shadowRoot.getElementById("focus-panel").innerHTML = "";
             return;
         }
@@ -2088,8 +2252,7 @@ class Gtfs2LiveCard extends HTMLElement {
         // still has a map worth drawing
         if (!this._lineDefs().some((d) => d.positions_url || d.route_url)) {
             this._renderMapHead();
-            body.innerHTML = `<div class="empty">${this._t("no_source")}</div>`;
-            this._mapDomReady = false;
+            this._clearMap(body, `<div class="empty">${this._t("no_source")}</div>`);
             return;
         }
         this._renderMap(false);
@@ -2111,8 +2274,8 @@ class Gtfs2LiveCard extends HTMLElement {
             ? ` style="aspect-ratio: ${esc(String(this._config.map_aspect))};"` : "";
         body.innerHTML = `
             <div class="map-wrap">
+                <div class="map-gl"></div>
                 <svg preserveAspectRatio="xMidYMid slice" tabindex="0"${aspect}>
-                    <g class="l-tiles"></g>
                     <g class="l-overlay"></g>
                     <g class="l-veh"></g>
                 </svg>
@@ -2131,12 +2294,12 @@ class Gtfs2LiveCard extends HTMLElement {
                 <div class="map-tip" hidden></div>
             </div>`;
         this._mapDomReady = true;
-        this._tileKey = null;
         this._scaleW = 0;
         this._scaleH = 0;
         this._popSize = null;
         this._vehEls.clear();
         this._attachMapEvents();
+        this._buildBasemap();
     }
 
     _renderMap(animate) {
@@ -2184,8 +2347,7 @@ class Gtfs2LiveCard extends HTMLElement {
                 : posData ? this._t("no_bus")
                 : routeTried ? this._t("route_unreachable")
                 : this._t("loading");
-            body.innerHTML = `<div class="empty">${msg}</div>`;
-            this._mapDomReady = false;
+            this._clearMap(body, `<div class="empty">${msg}</div>`);
             panel.innerHTML = "";
             return;
         }
@@ -2232,7 +2394,6 @@ class Gtfs2LiveCard extends HTMLElement {
         // invalidating cached geometry on every pan
         if (!this._origin || Math.abs(target[0] - this._origin.x) > 2e6 || Math.abs(target[1] - this._origin.y) > 2e6) {
             this._origin = { x: Math.floor(target[0]), y: Math.floor(target[1]) };
-            this._tileKey = null;
             // new origin: every relative coordinate changes, the vehicle
             // nodes must reappear in place rather than glide across the map
             this._vehEls.clear();
@@ -2269,31 +2430,8 @@ class Gtfs2LiveCard extends HTMLElement {
             (Math.log(Math.max(1, spanM)) - Math.log(MARKER_SPAN_MIN)) /
             (Math.log(MARKER_SPAN_MAX) - Math.log(MARKER_SPAN_MIN))));
 
-        // ── tiles (rebuilt only when the visible tile set changes)
-        const zRaw = Math.log2((WORLD * clientW) / (256 * vb[2]));
-        const z = Math.max(1, Math.min(19, Math.round(zRaw)));
-        const tileU = WORLD / Math.pow(2, z);
-        const r = (window.devicePixelRatio || 1) > 1.5 ? "@2x" : "";
-        const tpl = this._tileTemplate();
-        // one extra ring of tiles around the view, so a pan shows no gaps
-        // before the deferred re-render (tiles stay in the browser cache)
-        const tx0 = Math.floor((O.x + vb[0]) / tileU) - 1, tx1 = Math.floor((O.x + vb[0] + vb[2]) / tileU) + 1;
-        const ty0 = Math.floor((O.y + vb[1]) / tileU) - 1, ty1 = Math.floor((O.y + vb[1] + vb[3]) / tileU) + 1;
-        const tileKey = `${tpl}|${z}|${tx0}:${tx1}|${ty0}:${ty1}|${O.x}:${O.y}`;
-        if (tileKey !== this._tileKey) {
-            const nTiles = Math.pow(2, z);
-            let tiles = "", count = 0;
-            for (let tx = tx0; tx <= tx1 && count < 64; tx++) {
-                for (let ty = ty0; ty <= ty1 && count < 64; ty++, count++) {
-                    if (ty < 0 || ty >= nTiles) continue;
-                    const wx = ((tx % nTiles) + nTiles) % nTiles;
-                    const url = tpl.replace("{z}", z).replace("{x}", wx).replace("{y}", ty).replace("{r}", r);
-                    tiles += `<image href="${esc(url)}" x="${(tx * tileU - O.x).toFixed(1)}" y="${(ty * tileU - O.y).toFixed(1)}" width="${tileU.toFixed(1)}" height="${tileU.toFixed(1)}"></image>`;
-                }
-            }
-            svg.querySelector(".l-tiles").innerHTML = tiles;
-            this._tileKey = tileKey;
-        }
+        // ── base map: a theme flip or an edited map_style lands here
+        this._applyBasemapStyle();
 
         // ── routes (per line; passed/ahead split on the focused bus's line).
         // SVG stacks in paint order: draw the "top" line LAST.
@@ -2494,6 +2632,7 @@ class Gtfs2LiveCard extends HTMLElement {
         }
 
         svg.setAttribute("viewBox", vb.map((v) => v.toFixed(1)).join(" "));
+        this._syncBasemap();
         svg.querySelector(".l-overlay").innerHTML = routeSvg + stationSvg;
         this._syncVehicles(svg.querySelector(".l-veh"), vehicles);
 
@@ -2504,7 +2643,7 @@ class Gtfs2LiveCard extends HTMLElement {
         const attrib = body.querySelector(".map-attrib");
         if (attrib) {
             const newestAt = Math.max(0, ...this._ld.map((s) => s.sigAt || 0));
-            attrib.textContent = this._t("map_updated", { t: newestAt ? fmtAgo(lang, Date.now() - newestAt) : "…" });
+            attrib.textContent = this._attribText(newestAt);
         }
 
         // vehicle popup anchored on the tracked marker (replaces the old
@@ -2823,6 +2962,7 @@ class Gtfs2LiveCard extends HTMLElement {
             this._viewBox = from.map((v, i) => v + (to[i] - v) * e);
             const svg = this.shadowRoot.querySelector(".map-wrap svg");
             if (svg) svg.setAttribute("viewBox", this._viewBox.map((v) => v.toFixed(1)).join(" "));
+            this._syncBasemap();
             this._positionPop();
             this._updateScale();
             if (t < 1) this._anim = requestAnimationFrame(step);
@@ -2884,6 +3024,7 @@ class Gtfs2LiveCard extends HTMLElement {
     _applyVB(svg) {
         this._setViewBox(this._clampVB(this._viewBox));
         svg.setAttribute("viewBox", this._viewBox.map((v) => v.toFixed(1)).join(" "));
+        this._syncBasemap();
         this._positionPop();
         this._updateScale();
     }
@@ -3206,10 +3347,13 @@ class Gtfs2LiveCard extends HTMLElement {
         .empty code { font-size: 12px; }
         .map-body { border-top: 0; container-type: inline-size; }
         .map-wrap { position: relative; background: var(--gtfs2-map-background, rgba(127,127,127,.1)); user-select: none; }
-        .map-wrap svg { display: block; width: 100%; aspect-ratio: 2 / 1; touch-action: pan-y; cursor: grab; }
+        /* the base map canvas fills the frame under the SVG, which keeps
+           every pointer: MapLibre is not interactive, the card's gestures are */
+        .map-gl { position: absolute; inset: 0; }
+        .map-gl canvas { outline: none; }
+        .map-wrap svg { position: relative; display: block; width: 100%; aspect-ratio: 2 / 1; touch-action: pan-y; cursor: grab; }
         .map-wrap svg:active { cursor: grabbing; }
         @container (max-width: 380px) { .map-wrap svg { aspect-ratio: 4 / 3; } }
-        .tiles image { image-rendering: auto; }
         .bus { cursor: pointer; transition: transform .7s ease-out; }
         .bus .hd { transition: transform .7s ease-out; transform-origin: 0 0; }
         .bus.dim { opacity: 0.35; }
