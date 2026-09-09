@@ -310,6 +310,9 @@ const tramA = sensor("tram-a", { delays: [0, 62, 0, 130, 0, 0], duration: [26, 2
 const tramB = sensor("tram-b", { delays: [45, 0, 0, 0, 190, 0], duration: [24, 27, 24, 24, 30, 24] });
 const bus40 = sensor("bus-40", { delays: [0, 0, 95, 0, 0, 0], duration: [19, 23, 19, 26, 19, 19] });
 
+// Le fond de carte ne passe plus par Home Assistant : la carte charge
+// MapLibre et les styles VersaTiles depuis leurs CDN, le harnais n'a donc
+// rien à simuler de ce côté, mais Chrome doit avoir accès à internet.
 const hass = {
   locale: { language: lang },
   language: lang,
@@ -663,6 +666,11 @@ const ready = () => {
   return cards.every((c) => {
     const root = c.shadowRoot;
     if (!root?.querySelector("ha-card")) return false;
+    // le fond MapLibre annonce lui-même son repos (data-basemap="idle") :
+    // sans lui la capture montrerait les tracés sur un fond nu. Vaut pour
+    // toute carte qui montre son volet, les pages du tableau comprises
+    const wrap = root.querySelector(".map-wrap");
+    if (wrap && wrap.dataset.basemap !== "idle") return false;
     if (page === "departures" || page === "board") return true;
     if (!root.querySelector("svg")) return false;
     // la page popup n'est prête que la bulle ouverte
@@ -681,7 +689,9 @@ const poll = setInterval(() => {
   if (ready() && h === lastHeight) stable += 1; else stable = 0;
   lastHeight = h;
   // deux tours de suite à la même hauteur : plus rien n'arrive
-  if (stable >= 3 || waited > 15000) {
+  // trente secondes couvrent MapLibre, son style et ses tuiles sur un cache
+  // froid ; passé ce délai la page se déclare prête telle quelle
+  if (stable >= 3 || waited > 30000) {
     clearInterval(poll);
     const r = stage.getBoundingClientRect();
     // Seule la hauteur est mesurée. La largeur reste celle que shots.py a

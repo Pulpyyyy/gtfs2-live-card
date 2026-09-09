@@ -10,12 +10,20 @@ Orléans (see data/). Chrome opens each page and writes a PNG into images/.
 
 The card fetches its translations as ES modules, which a file:// page is not
 allowed to do, so the script serves the repository over HTTP on a free port
-for the duration of the run.
+for the duration of the run. The base map is MapLibre drawing VersaTiles
+styles, both fetched from their CDN by the card itself: Chrome needs the
+internet, and the script drives it through the DevTools protocol (one
+Chrome for the run, one tab per image) because the base map only settles in
+real time, which Chrome's one-shot --screenshot cannot wait for.
+
+Requires the websocket-client package:  pip install websocket-client
 """
 
 import argparse
+import base64
 import functools
 import http.server
+import json
 import re
 import os
 import shutil
@@ -23,9 +31,17 @@ import socket
 import socketserver
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
+
+try:
+    import websocket
+except ImportError:  # pragma: no cover
+    raise SystemExit("shots.py drives Chrome over DevTools: pip install websocket-client")
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -45,8 +61,8 @@ PAGES = {
     "pips":       (1536, 90),   # the round marks in a row, cut into one file each
     "selected":   (540, 900),   # one line picked from its header badge
     "popup":      (520, 640),   # one vehicle tracked, its bubble open
-    # Chrome headless will not open a window narrower than ~500 px, so the
-    # narrow page asks for that and the harness sizes the card inside it.
+    # the narrow page asks for a sidebar-width column and the harness sizes
+    # the card inside it
     "narrow":     (500, 700),   # a sidebar-width column
     "editor":     (460, 900),   # the visual editor, sections open
 }
@@ -72,6 +88,8 @@ CHROME_CANDIDATES = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 ]
 
+READY_TIMEOUT = 60      # seconds a page gets to declare itself ready
+
 
 def find_chrome():
     for c in CHROME_CANDIDATES:
@@ -86,68 +104,151 @@ def find_chrome():
         "Edge will not do: its headless mode writes no file on Windows.")
 
 
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *a, **k):
+        pass
+
+
 def serve(root: Path):
     """Serve `root` on a free port, in a thread, for the run."""
-    quiet = type("Quiet", (http.server.SimpleHTTPRequestHandler,), {
-        "log_message": lambda *a, **k: None,
-    })
     # `directory` is an __init__ argument, not a class attribute: without the
     # partial the handler serves the current directory, which is only right
     # when the script is run from the repository root.
-    handler = functools.partial(quiet, directory=str(root))
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    httpd = socketserver.TCPServer(("127.0.0.1", port), handler)
+    handler = functools.partial(Handler, directory=str(root))
+    port = free_port()
+    httpd = socketserver.ThreadingTCPServer(("127.0.0.1", port), handler)
+    httpd.daemon_threads = True
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd, port
 
 
-def measure(chrome, port, page, mode, lang, size):
-    """Ask the page how tall it actually is.
+class Chrome:
+    """One headless Chrome for the run, driven over the DevTools protocol.
+
+    A throwaway profile keeps the user's own Chrome out of it, and software
+    WebGL (SwiftShader) lets MapLibre draw where headless has no GPU.
+    """
+
+    def __init__(self, exe):
+        self.profile = tempfile.mkdtemp(prefix="gtfs2-shots-")
+        self.port = free_port()
+        self.proc = subprocess.Popen(
+            [exe, "--headless=new", "--no-sandbox", "--hide-scrollbars",
+             "--enable-unsafe-swiftshader", "--disable-extensions",
+             f"--remote-debugging-port={self.port}",
+             "--remote-allow-origins=*",    # the DevTools socket takes our loopback client
+             f"--user-data-dir={self.profile}",
+             "--window-size=1200,900", "about:blank"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            try:
+                self._http("/json/version")
+                return
+            except (urllib.error.URLError, OSError):
+                time.sleep(0.1)
+        self.close()
+        raise SystemExit("Chrome did not open its DevTools port")
+
+    def _http(self, path, method="GET"):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", method=method)
+        with urllib.request.urlopen(req, timeout=5) as r:
+            body = r.read()
+        # /json/close answers a plain "Target is closing"
+        return json.loads(body) if body.startswith(b"{") else body.decode(errors="replace")
+
+    def tab(self):
+        # a new target opens on about:blank: the viewport is set before the
+        # page is navigated, so the harness lays out at the right width from
+        # the first frame
+        info = self._http("/json/new?about:blank", method="PUT")
+        return Tab(self, info)
+
+    def close(self):
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+        shutil.rmtree(self.profile, ignore_errors=True)
+
+
+class Tab:
+    def __init__(self, chrome, info):
+        self.chrome = chrome
+        self.id = info["id"]
+        self.ws = websocket.create_connection(info["webSocketDebuggerUrl"], timeout=30)
+        self.seq = 0
+
+    def call(self, method, **params):
+        self.seq += 1
+        self.ws.send(json.dumps({"id": self.seq, "method": method, "params": params}))
+        while True:
+            msg = json.loads(self.ws.recv())
+            if msg.get("id") == self.seq:
+                if "error" in msg:
+                    raise RuntimeError(f"{method}: {msg['error']}")
+                return msg.get("result", {})
+
+    def eval(self, expression):
+        r = self.call("Runtime.evaluate", expression=expression, returnByValue=True)
+        return r.get("result", {}).get("value")
+
+    def viewport(self, w, h, scale):
+        self.call("Emulation.setDeviceMetricsOverride", width=w, height=h,
+                  deviceScaleFactor=scale, mobile=False)
+
+    def close(self):
+        try:
+            self.ws.close()
+        finally:
+            try:
+                self.chrome._http(f"/json/close/{self.id}")
+            except (urllib.error.URLError, OSError):
+                pass
+
+
+def shoot(chrome, port, page, mode, lang, size, scale, out):
+    """Open the page, wait for its own ready signal, photograph at its height.
 
     A window too short crops the last card and nothing says so, so the harness
-    reports the height it needs in document.title once it has drawn, and the
-    screenshot is taken at that height rather than at a number kept by hand.
+    reports the height it needs in document.title once it has drawn (and once
+    the base map is at rest), and the screenshot is taken at that height rather
+    than at a number kept by hand.
     """
     w, h = size
     url = (f"http://127.0.0.1:{port}/docs/screenshot-harness.html"
            f"?page={page}&mode={mode}&lang={lang}")
-    r = subprocess.run(
-        [chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
-         "--virtual-time-budget=20000", f"--window-size={w},{h}",
-         "--dump-dom", url],
-        capture_output=True, text=True, timeout=120)
-    m = re.search(r"<title>ready (\d+)x(\d+) ", r.stdout)
-    if not m:
-        # the page never finished: keep the configured size and let the
-        # screenshot show whatever went wrong
-        return size
-    # only the height is measured: the width stays as configured, since a
-    # fluid page stretches to its window and measuring it would be circular
-    return w, int(m.group(2))
-
-
-def shoot(chrome, port, page, mode, lang, size, scale, out):
-    w, h = size
-    url = (f"http://127.0.0.1:{port}/docs/screenshot-harness.html"
-           f"?page={page}&mode={mode}&lang={lang}")
-    # --virtual-time-budget lets the page's timers run at full speed and holds
-    # the screenshot until they are done: the card fetches its language, its
-    # positions and its map tiles before it has anything to show.
-    cmd = [
-        chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
-        "--hide-scrollbars", "--force-device-scale-factor=" + str(scale),
-        "--virtual-time-budget=20000",
-        f"--window-size={w},{h}",
-        f"--screenshot={out}",
-        url,
-    ]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    if not out.exists():
-        raise SystemExit(f"{page}/{mode}: Chrome wrote nothing.\n"
-                         f"{r.stderr.strip()[:800]}")
-    return out.stat().st_size
+    tab = chrome.tab()
+    try:
+        tab.viewport(w, h, scale)
+        tab.call("Page.navigate", url=url)
+        deadline = time.time() + READY_TIMEOUT
+        m = None
+        while time.time() < deadline:
+            m = re.match(r"ready (\d+)x(\d+) ", tab.eval("document.title") or "")
+            if m:
+                break
+            time.sleep(0.2)
+        if not m:
+            raise SystemExit(f"{page}/{mode}: the harness never said ready "
+                             f"(title: {tab.eval('document.title')!r})")
+        # only the height is measured: the width stays as configured, since a
+        # fluid page stretches to its window and measuring it would be circular
+        hh = int(m.group(2))
+        if hh != h:
+            tab.viewport(w, hh, scale)
+            time.sleep(0.4)   # one layout pass at the new height
+        data = tab.call("Page.captureScreenshot", format="png")["data"]
+        out.write_bytes(base64.b64decode(data))
+    finally:
+        tab.close()
+    return (w, hh), out.stat().st_size
 
 
 def crop_pips(sheet, mode, scale):
@@ -182,11 +283,14 @@ def crop_pips(sheet, mode, scale):
 
 
 def main():
+    global IMAGES
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("pages", nargs="*", help=f"pages to shoot (default: all of {', '.join(PAGES)})")
     ap.add_argument("--lang", default="en", help="card language (default en)")
     ap.add_argument("--mode", choices=["light", "dark", "both"], default="both")
     ap.add_argument("--scale", type=int, default=2, help="device pixel ratio (default 2)")
+    ap.add_argument("--out", type=Path, default=IMAGES,
+                    help="folder for the PNGs (default images/, the documentation's)")
     args = ap.parse_args()
 
     pages = args.pages or list(PAGES)
@@ -200,10 +304,11 @@ def main():
         raise SystemExit("docs/data/snapshot.json is missing: run "
                          "`python docs/data/snapshot.py` first.")
 
-    chrome = find_chrome()
-    IMAGES.mkdir(exist_ok=True)
+    IMAGES = args.out
+    IMAGES.mkdir(parents=True, exist_ok=True)
     httpd, port = serve(ROOT)
-    print(f"chrome: {chrome}")
+    chrome = Chrome(find_chrome())
+    print(f"chrome: devtools on 127.0.0.1:{chrome.port}")
     print(f"serving {ROOT} on 127.0.0.1:{port}\n")
 
     modes = ["light", "dark"] if args.mode == "both" else [args.mode]
@@ -213,9 +318,8 @@ def main():
             for mode in modes:
                 out = IMAGES / f"{page}-{mode}.png"
                 out.unlink(missing_ok=True)
-                size = measure(chrome, port, page, mode, args.lang, PAGES[page])
-                written = shoot(chrome, port, page, mode, args.lang, size,
-                                args.scale, out)
+                size, written = shoot(chrome, port, page, mode, args.lang,
+                                      PAGES[page], args.scale, out)
                 if page == "pips":
                     # the sheet is scaffolding: what ships is one small file
                     # per round mark, cut out of it
@@ -229,8 +333,9 @@ def main():
                 print(f"  {out.name:26} {written / 1024:6.0f} kB  "
                       f"{size[0]}×{size[1]}")
     finally:
+        chrome.close()
         httpd.shutdown()
-    print(f"\n{len(pages) * len(modes)} images, {total / 1024:.0f} kB in {IMAGES.name}/")
+    print(f"\n{len(pages) * len(modes)} images, {total / 1024:.0f} kB in {IMAGES}/")
 
 
 if __name__ == "__main__":
