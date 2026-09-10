@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.1.0";
+const CARD_VERSION = "1.1.1";
 
 console.info(
     `%c 🧭 GTFS2 Live Card %c v${CARD_VERSION} %c`,
@@ -54,6 +54,64 @@ const DEFAULTS = {
     longitude: null,
     refresh: 60,
     max_departures: 4,
+    // A journey: an ordered list of steps, each a gtfs2 sensor ridden from
+    // its origin to its destination (a leg), or a stop of the running leg
+    // worth a number of its own (a place to get off). Consecutive legs meet
+    // at a change, leg k's destination to leg k+1's origin, with a margin.
+    // Points are numbered 0 at the start, then one per step, the last at
+    // the final destination. The board chains the legs, the map draws the
+    // ridden slices and numbers the points. Without it nothing changes.
+    journey: null,
+    journey_margin: 3,        // minutes needed to change at a point, when the leg says nothing
+};
+
+// The journey steps, in order: {entity, margin?} rides that sensor's leg,
+// {stop} numbers a stop on the running leg. A bare string is a leg when it
+// names a sensor, a stop otherwise. A stop before any leg has nothing to sit
+// on and is dropped.
+const normJourney = (j) => {
+    if (!Array.isArray(j)) return [];
+    const out = [];
+    for (const raw of j) {
+        const s = typeof raw === "string" ? (raw.startsWith("sensor.") ? { entity: raw } : { stop: raw }) : raw;
+        if (!s || typeof s !== "object") continue;
+        if (s.entity) {
+            const m = Number(s.margin);
+            out.push({ kind: "leg", entity: String(s.entity), margin: Number.isFinite(m) && s.margin !== null && s.margin !== "" ? m : null });
+        } else if (s.stop != null && s.stop !== "" && out.length) {
+            out.push({ kind: "stop", ref: String(s.stop) });
+        }
+    }
+    return out;
+};
+
+// a GTFS clock ("HH:MM:SS", past 24:00 after midnight) as seconds since the
+// service day's midnight, or null
+const gtfsSecs = (v) => {
+    if (v == null) return null;
+    const m = String(v).match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    return m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3] || 0) : null;
+};
+
+// The index of a stop in a shape's ordered stops, at or after `from`, by
+// the surest clue first: its stop_sequence, its exact id, an id one side
+// contains (a platform under its station), its exact name, a name one side
+// contains. -1 when nothing matches.
+const findStopIdx = (stops, seq, id, name, from) => {
+    const sid = id ? String(id).trim() : "";
+    const lname = name ? String(name).trim().toLowerCase() : "";
+    const nm = (s) => (s.name || "").trim().toLowerCase();
+    const tests = [
+        seq != null && seq !== "" && Number.isFinite(Number(seq)) ? (s) => Number(s.seq) === Number(seq) : null,
+        sid ? (s) => s.id === sid : null,
+        sid ? (s) => s.id && (s.id.includes(sid) || sid.includes(s.id)) : null,
+        lname ? (s) => nm(s) === lname : null,
+        lname ? (s) => nm(s).includes(lname) || (nm(s) && lname.includes(nm(s))) : null,
+    ].filter(Boolean);
+    for (const t of tests) {
+        for (let i = Math.max(0, from || 0); i < stops.length; i++) if (t(stops[i])) return i;
+    }
+    return -1;
 };
 
 const WORLD = 1 << 28;        // Web-Mercator world size, in "world units"
@@ -638,10 +696,27 @@ class Gtfs2LiveCard extends HTMLElement {
 
     setConfig(config) {
         const hasLines = Array.isArray(config?.lines) && config.lines.length > 0;
-        if (!config || (!config.entity && !hasLines)) {
+        const journey = normJourney(config?.journey);
+        if (!config || (!config.entity && !hasLines && !journey.length)) {
             throw new Error("gtfs2-live-card : « entity » ou une liste « lines » est requis / set “entity” or a “lines” list");
         }
         this._config = { ...DEFAULTS, ...config };
+        this._journey = journey;
+        // a journey names its legs' sensors: they are lines of the card,
+        // listed or not, so each has its badge and its route shape. Appended
+        // after an explicit list, never reordered: line indexes are what a
+        // saved highlight or the editor rely on.
+        if (journey.length) {
+            const lines = hasLines ? [...config.lines]
+                : config.entity ? [{ entity: config.entity, positions_url: config.positions_url, route_url: config.route_url, line: config.line,
+                    color: config.line_color && config.line_color !== DEFAULTS.line_color ? config.line_color : null }]
+                : [];
+            const have = new Set(lines.map((l) => (typeof l === "string" ? l : l?.entity)).filter(Boolean));
+            for (const s of journey) {
+                if (s.kind === "leg" && !have.has(s.entity)) { lines.push(s.entity); have.add(s.entity); }
+            }
+            this._config.lines = lines;
+        }
         this._ld = this._lineDefs().map(() => ({ geo: null, geoAt: 0, err: null, route: null, routeAt: 0, sig: null, sigAt: 0 }));
         try {
             const saved = JSON.parse(localStorage.getItem(this._storageKey()) || "{}");
@@ -1472,7 +1547,24 @@ class Gtfs2LiveCard extends HTMLElement {
         // a badge-selected line filters the board to that line's departures
         if (this._hiLine != null) sources = sources.filter((s) => s.def && s.def.idx === this._hiLine);
         const rows = [];
-        for (const src of sources) {
+        for (const src of sources) rows.push(...this._sourceRows(src));
+        // a row leaves the board only once BOTH of its clocks are behind us:
+        // a late bus keeps its future realtime, an early bus keeps its future
+        // schedule slot. Filtering on the realtime alone dropped an early bus
+        // before the hour printed at the stop had even come.
+        const cutoff = Date.now() - 60000;
+        const upcoming = rows.filter((r) =>
+            Math.max(r.time.getTime(), r.theo ? r.theo.getTime() : 0) > cutoff);
+        upcoming.sort((x, y) => x.time - y.time);
+        return { rows: upcoming.slice(0, this._config.max_departures), multi: sources.length > 1 };
+    }
+
+    // one sensor's departures as rows {time, theo, rt, delayMin, durMin,
+    // def}, realtime paired with its schedule slot; neither filtered nor
+    // sorted, the board and the journey chain do that their own way
+    _sourceRows(src) {
+        const rows = [];
+        {
             const a = src.st.attributes || {};
             const theoRaw = Array.isArray(a.next_departures) ? a.next_departures : [];
             const dursRaw = Array.isArray(a.next_departures_durations) ? a.next_departures_durations : [];
@@ -1518,15 +1610,205 @@ class Gtfs2LiveCard extends HTMLElement {
                 if (!usedTheo.has(j)) rows.push({ time: th, theo: null, rt: false, delayMin: null, durMin: theoAll[j].dur, def: src.def });
             });
         }
-        // a row leaves the board only once BOTH of its clocks are behind us:
-        // a late bus keeps its future realtime, an early bus keeps its future
-        // schedule slot. Filtering on the realtime alone dropped an early bus
-        // before the hour printed at the stop had even come.
+        return rows;
+    }
+
+    /* ── JOURNEY: legs chained on the board, slices numbered on the map ── */
+
+    // Where a leg starts and ends on its route shape: indexes into
+    // route.stops, or null while the shape is not read yet. The sensor names
+    // its two ends three ways, tried from the surest to the loosest: the
+    // stop_sequence (only trains carry it today), the stop id (the record
+    // the user picked, which on a grouped stop is not always the platform
+    // the trip serves), then the name. The destination is looked for AFTER
+    // the origin: a loop line calls at a stop twice. An end not found falls
+    // back on the shape's own end, so the slice still draws.
+    _legSlice(def, st) {
+        const route = this._ld[def.idx]?.route || null;
+        const at = st?.attributes || {};
+        const meta = this._emeta.get(def.entity) || {};
+        const idOf = (v) => (v == null ? "" : String(v).split(": ")[0]);
+        const ends = {
+            oid: idOf(at.origin_station_stop_id) || meta.origin || "",
+            oname: at.origin_station_stop_name ?? meta.oname ?? "",
+            oseq: at.origin_station_stop_sequence,
+            did: idOf(at.destination_station_stop_id) || meta.dest || "",
+            dname: at.destination_station_stop_name ?? meta.dname ?? "",
+            dseq: at.destination_station_stop_sequence,
+        };
+        // an unavailable sensor loses its attributes: keep the ends it named
+        if (def.entity && (at.origin_station_stop_id || at.destination_station_stop_id)) {
+            const patch = {};
+            if (ends.oid) patch.origin = ends.oid;
+            if (ends.oname) patch.oname = ends.oname;
+            if (ends.did) patch.dest = ends.did;
+            if (ends.dname) patch.dname = ends.dname;
+            this._remember(def.entity, patch);
+        }
+        if (!route?.stops?.length) return { route: null, oi: null, di: null, oFound: false, dFound: false, ...ends };
+        const stops = route.stops;
+        let oi = findStopIdx(stops, ends.oseq, ends.oid, ends.oname, 0);
+        const oFound = oi >= 0;
+        if (oi < 0) oi = 0;
+        let di = findStopIdx(stops, ends.dseq, ends.did, ends.dname, oi + 1);
+        const dFound = di >= 0;
+        if (di < 0) di = stops.length - 1;
+        return { route, oi, di, oFound, dFound, ...ends };
+    }
+
+    // The journey resolved against the lines and the shapes read so far:
+    // its legs, and its numbered points - 0 at the first leg's origin, one
+    // per step after it (a stop of the running leg, or the change onto the
+    // next leg), the last at the final destination. A leg whose sensor is
+    // not among the lines is skipped. Null without a journey.
+    _journeyPlan() {
+        if (!this._journey?.length) return null;
+        const defs = this._lineDefs();
+        const legs = [], points = [];
+        let n = 0;
+        for (const step of this._journey) {
+            if (step.kind === "leg") {
+                const def = defs.find((d) => d.entity === step.entity);
+                if (!def) continue;
+                const st = this._hass?.states?.[step.entity] || null;
+                const leg = { idx: legs.length, def, st, margin: step.margin ?? this._config.journey_margin, slice: this._legSlice(def, st) };
+                if (!legs.length) points.push({ n, kind: "start", leg, at: leg.slice.oi, name: leg.slice.oname });
+                else {
+                    const prev = legs[legs.length - 1];
+                    points.push({ n: ++n, kind: "transfer", leg: prev, at: prev.slice.di, name: prev.slice.dname, to: leg, toAt: leg.slice.oi });
+                }
+                legs.push(leg);
+            } else if (legs.length) {
+                const leg = legs[legs.length - 1];
+                const s = leg.slice;
+                // a stop named by the config: looked for strictly inside the
+                // leg, by id or by name; the ends already have their numbers
+                let at = null;
+                if (s.route) {
+                    const i = findStopIdx(s.route.stops, null, step.ref, step.ref, s.oi + 1);
+                    if (i >= 0 && i < s.di) at = i;
+                }
+                points.push({ n: ++n, kind: "via", leg, at, name: at != null ? s.route.stops[at].name : step.ref });
+            }
+        }
+        if (!legs.length) return null;
+        const last = legs[legs.length - 1];
+        points.push({ n: ++n, kind: "end", leg: last, at: last.slice.di, name: last.slice.dname });
+        for (const p of points) {
+            const stop = p.at != null ? p.leg.slice.route?.stops[p.at] : null;
+            if (stop) { p.stop = stop; if (!p.name) p.name = stop.name; }
+            if (p.kind === "transfer" && p.toAt != null) p.toStop = p.to.slice.route?.stops[p.toAt] || null;
+        }
+        return { legs, points };
+    }
+
+    // The next journeys: one per upcoming departure of the first leg, each
+    // leg after it taken on the first departure at or after the previous
+    // leg's arrival plus the margin. A leg with no such departure today
+    // breaks the chain there: what is known stays shown, the rest is said
+    // to be missing rather than guessed.
+    _journeys() {
+        const plan = this._journeyPlan();
+        if (!plan) return { plan: null, journeys: [] };
         const cutoff = Date.now() - 60000;
-        const upcoming = rows.filter((r) =>
-            Math.max(r.time.getTime(), r.theo ? r.theo.getTime() : 0) > cutoff);
-        upcoming.sort((x, y) => x.time - y.time);
-        return { rows: upcoming.slice(0, this._config.max_departures), multi: sources.length > 1 };
+        const rowsOf = plan.legs.map((leg) => {
+            const rows = leg.st ? this._sourceRows({ def: leg.def, st: leg.st }) : [];
+            return rows
+                .filter((r) => Math.max(r.time.getTime(), r.theo ? r.theo.getTime() : 0) > cutoff)
+                .sort((a, b) => a.time - b.time);
+        });
+        const arrivalOf = (row) => (row.durMin != null ? new Date(row.time.getTime() + row.durMin * 60000) : null);
+        const journeys = [];
+        for (const r0 of rowsOf[0].slice(0, this._config.max_departures)) {
+            const rides = [{ leg: plan.legs[0], row: r0, dep: r0.time, arr: arrivalOf(r0), wait: null }];
+            let broken = null;
+            for (let k = 1; k < plan.legs.length; k++) {
+                const prev = rides[k - 1];
+                const leg = plan.legs[k];
+                if (!prev.arr) { broken = k; break; }
+                const earliest = prev.arr.getTime() + leg.margin * 60000;
+                const row = rowsOf[k].find((r) => r.time.getTime() >= earliest) || null;
+                if (!row) { broken = k; break; }
+                rides.push({ leg, row, dep: row.time, arr: arrivalOf(row), wait: Math.round((row.time.getTime() - prev.arr.getTime()) / 60000) });
+            }
+            const last = rides[rides.length - 1];
+            journeys.push({ rides, broken, dep: r0.time, arr: broken == null ? last.arr : null });
+        }
+        return { plan, journeys };
+    }
+
+    // When one journey reaches a point: the ride's departure at the start,
+    // its arrival at a change or the end, and on the way the departure
+    // plus the shape's own clock between the two stops - the trip drawn is
+    // rarely the one ridden, but the run time between two stops barely
+    // moves from one to the next. Null when the ride is not made, or the
+    // shape carries no clocks.
+    _pointTime(p, j) {
+        const ride = j.rides[p.leg.idx];
+        if (!ride) return null;
+        if (p.kind === "start") return ride.dep;
+        if (p.kind === "via") {
+            const s = p.leg.slice;
+            const t0 = s.route?.stops[s.oi]?.time, t1 = p.stop?.time;
+            return t0 != null && t1 != null && t1 >= t0 ? new Date(ride.dep.getTime() + (t1 - t0) * 1000) : null;
+        }
+        return ride.arr;
+    }
+
+    // What the map draws of the journey, from the shapes read so far: per
+    // line the ridden slices (a cut of the polyline and the stops on it),
+    // the points that have a place, the walks of the changes, and the
+    // ground to fit the view on. Null without a journey; a leg whose shape
+    // is not read yet contributes nothing until it is.
+    _journeyGeometry() {
+        const plan = this._journeyPlan();
+        if (!plan) return null;
+        const byLine = new Map();
+        const fit = [];
+        for (const leg of plan.legs) {
+            const s = leg.slice;
+            if (!s.route || s.oi == null || s.di == null || s.di <= s.oi) continue;
+            const stops = s.route.stops.slice(s.oi, s.di + 1);
+            const sub = this._subRoute(s.route, stops[0].cum, stops[stops.length - 1].cum);
+            const g = { leg, sub, stops };
+            if (!byLine.has(leg.def.idx)) byLine.set(leg.def.idx, []);
+            byLine.get(leg.def.idx).push(g);
+            fit.push(...sub.line);
+        }
+        const points = [], walks = [];
+        for (const p of plan.points) {
+            if (!p.stop) continue;
+            points.push({ n: p.n, kind: p.kind, name: p.name || "", pos: p.stop, li: p.leg.def.idx });
+            fit.push(p.stop);
+            // a change between two platforms apart: the walk between them.
+            // Under a few metres the two records are one place, no walk
+            if (p.kind === "transfer" && p.toStop && Math.hypot(p.toStop.x - p.stop.x, p.toStop.y - p.stop.y) * (p.leg.slice.route.mPerU || 1) > 5) {
+                walks.push({ from: p.stop, to: p.toStop });
+                fit.push(p.toStop);
+            }
+        }
+        return { plan, byLine, points, walks, fit };
+    }
+
+    // the polyline between two abscissae, cut at both ends, shaped like a
+    // route ({line, cum, mPerU}) so the arrow helper can walk it
+    _subRoute(route, cumA, cumB) {
+        const at = (c) => {
+            let i = 1;
+            while (i < route.cum.length && route.cum[i] < c) i++;
+            if (i >= route.line.length) return route.line[route.line.length - 1];
+            const a = route.line[i - 1], b = route.line[i];
+            const seg = route.cum[i] - route.cum[i - 1] || 1;
+            const t = Math.max(0, Math.min(1, (c - route.cum[i - 1]) / seg));
+            return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+        };
+        const line = [at(cumA)], cum = [0];
+        for (let i = 0; i < route.line.length; i++) {
+            if (route.cum[i] > cumA && route.cum[i] < cumB) { line.push(route.line[i]); cum.push(route.cum[i] - cumA); }
+        }
+        line.push(at(cumB));
+        cum.push(cumB - cumA);
+        return { line, cum, mPerU: route.mPerU };
     }
 
     _renderDepartures() {
@@ -1543,12 +1825,46 @@ class Gtfs2LiveCard extends HTMLElement {
         head.style.display = "";
         head.setAttribute("aria-expanded", String(!this._collapsed.dep));
         const lang = this._lang();
-        const { rows, multi } = this._departureRows();
         const now = new Date();
-        const hasRt = rows.some((r) => r.rt);
-        const nextRow = rows[0];
         const hiDef = this._hiLine != null ? this._lineDefs().find((d) => d.idx === this._hiLine) : null;
         const filterBadge = hiDef ? ` <span class="mini-badge" style="background:${esc(hiDef.color)}">${esc(this._lineLabelOf(hiDef))}</span>` : "";
+        // the journey board: the legs chained, one row per departure of the
+        // first leg. A line picked from its badge gets its plain departures
+        // instead, the way it always did
+        const jn = !hiDef && this._journey?.length ? this._journeys() : null;
+        if (jn?.plan) {
+            const first = jn.journeys[0];
+            const r0 = first?.rides[0].row;
+            const hasRtJ = jn.journeys.some((j) => j.rides[0].row.rt);
+            if (this._collapsed.dep) {
+                const nextDay = first ? dayTag(lang, first.dep, now) : "";
+                const summary = first
+                    ? `${this._t("next")} <b>${nextDay ? esc(nextDay) + " " : ""}${fmtHM(first.dep)}</b>${first.arr ? ` → ${fmtHM(first.arr)}` : ""}${r0.rt && r0.delayMin ? ` · ${r0.delayMin > 0 ? "+" : ""}${r0.delayMin} min` : ""}`
+                    : this._t("no_departure");
+                head.innerHTML = `
+                    <span class="chev">${ICONS.chevronRight}</span>
+                    <span class="sect-title">${this._t("journey")}</span>
+                    <span class="spacer"></span>
+                    ${hasRtJ ? `<span class="live-dot"></span>` : ""}
+                    <span class="summary">${summary}</span>`;
+                body.innerHTML = "";
+                return;
+            }
+            head.innerHTML = `
+                <span class="chev">${ICONS.chevronDown}</span>
+                <span class="sect-title">${this._t("journey")}</span>
+                <span class="spacer"></span>
+                ${hasRtJ ? `<span class="live-dot"></span><span class="summary">${this._t("realtime")}</span>` : `<span class="summary">${this._t("scheduled")}</span>`}`;
+            const jHtml = this._journeyRowsHtml(jn.plan, jn.journeys, lang, now);
+            const firstSt = jn.plan.legs[0].st;
+            const restNote = this._restingNote(jn.plan.legs[0].def);
+            const emptyJ = firstSt?.state === "unavailable" ? this._t("sensor_unavailable") : (restNote || this._t("none_upcoming"));
+            body.innerHTML = jHtml || `<div class="empty${restNote ? " rest" : ""}">${emptyJ}</div>`;
+            return;
+        }
+        const { rows, multi } = this._departureRows();
+        const hasRt = rows.some((r) => r.rt);
+        const nextRow = rows[0];
 
         if (this._collapsed.dep) {
             const nextLine = multi && nextRow?.def ? ` <span class="mini-badge" style="background:${esc(nextRow.def.color)}">${esc(this._lineLabelOf(nextRow.def))}</span>` : "";
@@ -1659,6 +1975,66 @@ class Gtfs2LiveCard extends HTMLElement {
                 : (restMsg || this._t("none_upcoming")));
         body.innerHTML = (rowsHtml || `<div class="empty${restMsg && !(hiDef && !hiDef.entity) ? " rest" : ""}">${emptyMsg}</div>`)
             + (chips.length ? `<div class="info-strip">${chips.join("")}</div>` : "");
+    }
+
+    // One row per journey: the first leg's departure as the big time, the
+    // final arrival and the door-to-door time beside it, then the points in
+    // order - number, name, clock - joined by the badge of the leg ridden
+    // between them, a change showing its wait, a leg not reached today
+    // ending the line with a word rather than a guess.
+    _journeyRowsHtml(plan, journeys, lang, now) {
+        const sc = this._stationColor();
+        const ink = inkOn(sc);
+        return journeys.map((j) => {
+            const r0 = j.rides[0].row;
+            const strike = r0.rt && r0.theo && Math.abs(r0.time - r0.theo) >= 60000;
+            let chip;
+            if (!r0.rt) chip = `<span class="chip chip-theo">${this._t("scheduled")}</span>`;
+            else if (r0.delayMin == null) chip = "";
+            else if (Math.abs(r0.delayMin) < 1) chip = `<span class="chip chip-ok">${this._t("on_time")}</span>`;
+            else if (r0.delayMin > 0) chip = `<span class="chip chip-late">+${r0.delayMin} min</span>`;
+            else chip = `<span class="chip chip-early">${r0.delayMin} min</span>`;
+            const tag = dayTag(lang, j.dep, now);
+            const total = j.arr ? Math.round((j.arr.getTime() - j.dep.getTime()) / 60000) : null;
+            const arrival = j.arr ? `<span class="sub dest-inline">→ ${fmtHM(j.arr)}${total != null ? ` · ${fmtDur(total)}` : ""}</span>` : "";
+            let steps = "";
+            for (const p of plan.points) {
+                const ride = j.rides[p.leg.idx];
+                if (!ride) break;                      // the chain broke before this leg
+                const t = this._pointTime(p, j);
+                steps += `<span class="jstep"><span class="jnum" style="background:${esc(sc)};color:${ink}">${p.n}</span>`
+                    + `<span class="jname">${esc(p.name || "")}</span>${t ? `<b>${fmtHM(t)}</b>` : ""}</span>`;
+                if (p.kind === "end") break;
+                // the leg ridden from this point on
+                const next = p.kind === "transfer" ? j.rides[p.to.idx] : ride;
+                if (p.kind === "transfer" && !next) {
+                    steps += `<span class="jbroken">${this._t("no_connection")}</span>`;
+                    break;
+                }
+                const leg = p.kind === "transfer" ? p.to : p.leg;
+                const wait = p.kind === "transfer" && next.wait != null ? `<span class="jwait">${this._t("transfer_wait", { n: next.wait })}</span>` : "";
+                steps += `${wait}<span class="jleg"><span class="mini-badge" style="background:${esc(leg.def.color)}">${esc(this._lineLabelOf(leg.def))}</span>`
+                    + `${p.kind === "transfer" ? `<b>${fmtHM(next.dep)}</b>` : ""}</span>`;
+            }
+            return `
+            <div class="row jrow">
+                <div class="times">
+                    <div class="time-line">
+                        <span class="time">${fmtHM(j.dep)}</span>
+                        ${tag ? `<span class="day-tag">${esc(tag)}</span>` : ""}
+                        ${r0.rt ? `<span class="rt-icon">${ICONS.live}</span>` : ""}
+                        ${strike ? `<span class="sub strike">${this._t("scheduled_at", { t: fmtHM(r0.theo) })}</span>` : ""}
+                        ${arrival}
+                    </div>
+                    <div class="jsteps">${steps}</div>
+                </div>
+                <span class="spacer"></span>
+                <div class="right">
+                    <span class="countdown" data-ts="${j.dep.getTime()}">${fmtCountdown(lang, j.dep, now)}</span>
+                    ${chip}
+                </div>
+            </div>`;
+        }).join("");
     }
 
     /* The same rows laid out as a timetable: departure, arrival, duration,
@@ -1861,6 +2237,9 @@ class Gtfs2LiveCard extends HTMLElement {
                         name: String(f.properties?.stop_name || ""),
                         seq: f.properties?.stop_sequence,
                         cum: c,
+                        // the drawn trip's clock at this stop: what a journey
+                        // needs to time a point between two of its stops
+                        time: gtfsSecs(f.properties?.departure_time),
                     };
                 });
             slot.route = { line, cum, stops, mPerU };
@@ -2042,33 +2421,36 @@ class Gtfs2LiveCard extends HTMLElement {
         return svg;
     }
 
-    // origin-stop pins, shown only for the selected/tracked line (topLi);
-    // the neutral view stays minimal. An explicit latitude/longitude in the
-    // config is intentional and always shows.
+    // The two ends of the selected/tracked line (topLi), each a stop of a
+    // shape tagged end: "start" or "end"; the neutral view stays minimal.
+    // The origin is looked for on the line's own shape, else on any other
+    // shape calling there, so its pin survives a shape not read yet; the
+    // destination only on its own shape, after the origin. An explicit
+    // latitude/longitude in the config is intentional and always shows.
     _stationPoints(topLi) {
         const pts = [];
         const seen = new Set();
         if (topLi != null) {
             for (const src of this._depSources()) {
                 if (!src.def || src.def.idx !== topLi) continue;
-                // an unavailable sensor loses its attributes: fall back on the
-                // last origin id seen, so the pin survives end of service
-                let originId = String(src.st.attributes?.origin_station_stop_id || "").split(": ")[0];
-                if (originId) this._remember(src.st.entity_id, { origin: originId });
-                else originId = this._emeta.get(src.st.entity_id)?.origin || "";
-                if (!originId || seen.has(originId)) continue;
-                const own = this._ld[src.def.idx]?.route;
-                const pools = [own, ...this._ld.map((s) => s.route)].filter(Boolean);
-                let hit = null;
-                for (const route of pools) {
-                    hit = route.stops?.find((s) => s.id === originId || s.id.includes(originId) || originId.includes(s.id)) || null;
-                    if (hit) break;
+                // the sensor's ends, remembered so an unavailable sensor
+                // (end of service) keeps them
+                const slice = this._legSlice(src.def, src.st);
+                const stops = slice.route?.stops || [];
+                let origin = slice.oFound ? stops[slice.oi] : null;
+                if (!origin && slice.oid) {
+                    for (const route of this._ld.map((s) => s.route).filter(Boolean)) {
+                        origin = route.stops?.find((s) => s.id === slice.oid || s.id.includes(slice.oid) || slice.oid.includes(s.id)) || null;
+                        if (origin) break;
+                    }
                 }
-                if (hit) { seen.add(originId); pts.push(hit); }
+                if (origin && !seen.has("o" + origin.id)) { seen.add("o" + origin.id); pts.push({ ...origin, end: "start" }); }
+                const dest = slice.dFound ? stops[slice.di] : null;
+                if (dest && !seen.has("d" + dest.id)) { seen.add("d" + dest.id); pts.push({ ...dest, end: "end" }); }
             }
         }
         if (this._config.latitude != null && this._config.longitude != null) {
-            pts.push(this._world(Number(this._config.latitude), Number(this._config.longitude)));
+            pts.push({ ...this._world(Number(this._config.latitude), Number(this._config.longitude)), end: "start" });
         }
         return pts;
     }
@@ -2335,6 +2717,9 @@ class Gtfs2LiveCard extends HTMLElement {
         // the "top" line: the focused bus's line, else the badge-highlighted one
         const topLi = focusEntry ? focusEntry.def.idx : this._hiLine;
         const stations = this._stationPoints(topLi);
+        // the journey, drawn in the neutral view only: a line picked from its
+        // badge or a tracked vehicle shows that line whole, as it always did
+        const jGeo = topLi == null ? this._journeyGeometry() : null;
         const anyRoute = this._ld.some((s) => s.route);
         if (!all.length && !anyRoute && !stations.length) {
             // nothing to draw at all: name the half that is missing. A route
@@ -2376,9 +2761,18 @@ class Gtfs2LiveCard extends HTMLElement {
             const w = 900 / mPerU, h = w * frameAspect;
             target = [c.x - w / 2, c.y - h * 0.6, w, h];
         } else {
-            const pts = all.map((e) => this._world(e.f.geometry.coordinates[1], e.f.geometry.coordinates[0]));
-            pts.push(...stations);
-            for (const s of this._ld) if (s.route) pts.push(...s.route.line);
+            let pts;
+            if (jGeo?.fit.length) {
+                // a journey fits its own ground: the ridden slices, the
+                // numbered points and the walks between them. Vehicles at the
+                // far end of a line are still drawn, off screen until the
+                // user pans there, rather than stretching the view to them
+                pts = [...jGeo.fit, ...stations];
+            } else {
+                pts = all.map((e) => this._world(e.f.geometry.coordinates[1], e.f.geometry.coordinates[0]));
+                pts.push(...stations);
+                for (const s of this._ld) if (s.route) pts.push(...s.route.line);
+            }
             let minX = Math.min(...pts.map((p) => p.x)), maxX = Math.max(...pts.map((p) => p.x));
             let minY = Math.min(...pts.map((p) => p.y)), maxY = Math.max(...pts.map((p) => p.y));
             const padX = Math.max((maxX - minX) * 0.12, 300 / mPerU);
@@ -2470,6 +2864,49 @@ class Gtfs2LiveCard extends HTMLElement {
             const bc = rel(this._world(focusEntry.f.geometry.coordinates[1], focusEntry.f.geometry.coordinates[0]));
             placed.push({ x: bc.x - (pw / 2) * u, y: bc.y - (24 + ph) * u, w: pw * u, h: ph * u });
         }
+        // the ends of the line shown, or of the journey, say what they are
+        // at every zoom: a word beside the marker, the stop's name with it
+        // once the view is tight. Reserved first, so no stop label sits
+        // where the word goes; drawn last, above the overlay (further down)
+        const endLabels = [];
+        // vehicles sit above the overlay: the word goes to the side of the
+        // marker least covered by them at this refresh - right, left,
+        // above, below, the first clear one winning
+        const overlap = (b, list) => list.reduce((sum, o) => sum
+            + Math.max(0, Math.min(b.x + b.w, o.x + o.w) - Math.max(b.x, o.x))
+            * Math.max(0, Math.min(b.y + b.h, o.y + o.h) - Math.max(b.y, o.y)), 0);
+        const vehBoxes = all.map((e) => {
+            const q = rel(this._world(e.f.geometry.coordinates[1], e.f.geometry.coordinates[0]));
+            const r = (markerR + 3) * u;
+            return { x: q.x - r, y: q.y - r, w: 2 * r, h: 2 * r };
+        });
+        const endLabel = (pos, kind, name) => {
+            const c = rel(pos);
+            const word = this._t(kind === "end" ? "map_end" : "map_start");
+            const nm = name ? String(name).trim() : "";
+            const both = labelsOn && !!nm;
+            let text = both ? `${word} · ${nm}` : word;
+            const full = text.length <= 30;
+            if (!full) text = text.slice(0, 29).trimEnd() + "…";
+            const w = (text.length * 5.6 + 12) * u, h = 15 * u, gap = 13 * u;
+            const sides = [
+                { x: c.x + gap, y: c.y - h / 2, w, h },
+                { x: c.x - gap - w, y: c.y - h / 2, w, h },
+                { x: c.x - w / 2, y: c.y - gap - h, w, h },
+                { x: c.x - w / 2, y: c.y + gap, w, h },
+            ];
+            let box = sides[0], least = Infinity;
+            for (const b of sides) {
+                const pen = overlap(b, placed) + overlap(b, vehBoxes);
+                if (pen < least) { least = pen; box = b; }
+                if (!pen) break;
+            }
+            placed.push(box);
+            if (both && full) this._shownLabels.add(nm.toLowerCase());
+            endLabels.push({ box, text });
+        };
+        for (const st of stations) endLabel(st, st.end, st.name);
+        if (jGeo) for (const p of jGeo.points) if (p.kind === "start" || p.kind === "end") endLabel(p.pos, p.kind, p.name);
         const routeDefs = topLi == null ? defs
             : [...defs].sort((a, b) => (a.idx === topLi ? 1 : 0) - (b.idx === topLi ? 1 : 0));
         for (const def of routeDefs) {
@@ -2517,6 +2954,21 @@ class Gtfs2LiveCard extends HTMLElement {
                         }
                     }
                     if (labelsOn) routeSvg += this._stopLabels(route.stops, rel, u, placed, next);
+                } else if (jGeo?.byLine.has(def.idx)) {
+                    // a journey line: the whole shape faint for context, the
+                    // ridden slice full, with its arrows, its stops and their
+                    // names; the points get their numbers further down
+                    routeSvg += `<path d="${dAll}" fill="none" stroke="${esc(color)}" stroke-width="${4.5 * u}" opacity="0.18" stroke-linecap="round"></path>`;
+                    for (const g of jGeo.byLine.get(def.idx)) {
+                        const d = g.sub.line.map((p, i) => `${i ? "L" : "M"}${(p.x - O.x).toFixed(1)} ${(p.y - O.y).toFixed(1)}`).join(" ");
+                        routeSvg += `<path d="${d}" fill="none" stroke="${esc(color)}" stroke-width="${5 * u}" opacity="0.92" stroke-linecap="round"></path>`;
+                        routeSvg += this._routeArrows(g.sub, rel, u, spanM);
+                        for (const s of g.stops) {
+                            const p = rel(s);
+                            routeSvg += this._stopMarker(s, p, u, esc(color), 3.5, hasLinks(s, def), def.idx);
+                        }
+                        if (labelsOn) routeSvg += this._stopLabels(g.stops, rel, u, placed, null);
+                    }
                 } else {
                     routeSvg += `<path d="${dAll}" fill="none" stroke="${esc(color)}" stroke-width="${4.5 * u}" opacity="${dimLine ? 0.18 : 0.9}" stroke-linecap="round"></path>`;
                     if (!dimLine) {
@@ -2548,14 +3000,42 @@ class Gtfs2LiveCard extends HTMLElement {
             }
         }
 
-        // ── origin stations (one per departure sensor), in their own color
+        // ── the line's ends (one pair per departure sensor), in the station
+        // colour: the start a hollow ring with a dot, the arrival a solid
+        // disc with a square inside, the way a terminus is drawn
         let stationSvg = "";
         const sc = this._stationColor();
         for (const station of stations) {
             const s = rel(station);
-            stationSvg += `<circle cx="${s.x.toFixed(1)}" cy="${s.y.toFixed(1)}" r="${13 * u}" fill="${esc(sc)}" opacity="0.2"></circle>
-                          <circle cx="${s.x.toFixed(1)}" cy="${s.y.toFixed(1)}" r="${9 * u}" fill="var(--card-background-color, #fff)" stroke="${esc(sc)}" stroke-width="${3.5 * u}"></circle>
+            stationSvg += `<circle cx="${s.x.toFixed(1)}" cy="${s.y.toFixed(1)}" r="${13 * u}" fill="${esc(sc)}" opacity="0.2"></circle>`;
+            if (station.end === "end") {
+                stationSvg += `<circle cx="${s.x.toFixed(1)}" cy="${s.y.toFixed(1)}" r="${9 * u}" fill="${esc(sc)}" stroke="var(--card-background-color, #fff)" stroke-width="${2 * u}"></circle>
+                          <rect x="${(s.x - 3 * u).toFixed(1)}" y="${(s.y - 3 * u).toFixed(1)}" width="${6 * u}" height="${6 * u}" rx="${0.8 * u}" fill="var(--card-background-color, #fff)"></rect>`;
+            } else {
+                stationSvg += `<circle cx="${s.x.toFixed(1)}" cy="${s.y.toFixed(1)}" r="${9 * u}" fill="var(--card-background-color, #fff)" stroke="${esc(sc)}" stroke-width="${3.5 * u}"></circle>
                           <circle cx="${s.x.toFixed(1)}" cy="${s.y.toFixed(1)}" r="${3.2 * u}" fill="${esc(sc)}"></circle>`;
+            }
+        }
+        // ── journey points: the walk of a change first (dotted, under the
+        // discs), then one numbered disc per point in the station colour
+        if (jGeo) {
+            const ink = inkOn(sc);
+            for (const w of jGeo.walks) {
+                const a = rel(w.from), b = rel(w.to);
+                stationSvg += `<path d="M${a.x.toFixed(1)} ${a.y.toFixed(1)} L${b.x.toFixed(1)} ${b.y.toFixed(1)}" fill="none" stroke="${esc(sc)}" stroke-width="${3 * u}" stroke-dasharray="${1 * u} ${6 * u}" stroke-linecap="round" opacity="0.9"></path>`;
+            }
+            for (const p of jGeo.points) {
+                const c = rel(p.pos);
+                stationSvg += `<g class="stop jpt" data-action="stop" data-li="${p.li}" data-name="${esc(p.name)}" data-x="${c.x.toFixed(1)}" data-y="${c.y.toFixed(1)}">
+                    <circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${14 * u}" fill="${esc(sc)}" opacity="0.2"></circle>
+                    <circle class="dot" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${10 * u}" fill="${esc(sc)}" stroke="var(--card-background-color, #fff)" stroke-width="${2.5 * u}"></circle>
+                    <text x="${c.x.toFixed(1)}" y="${(c.y + 3.8 * u).toFixed(1)}" font-size="${(11 * u).toFixed(2)}" font-weight="700" fill="${ink}" text-anchor="middle" pointer-events="none">${p.n}</text></g>`;
+            }
+        }
+        // ── the ends' words, ringed in the station colour, above the markers
+        for (const l of endLabels) {
+            stationSvg += `<g pointer-events="none"><rect x="${l.box.x.toFixed(1)}" y="${l.box.y.toFixed(1)}" width="${l.box.w.toFixed(1)}" height="${l.box.h.toFixed(1)}" rx="${(7.5 * u).toFixed(1)}" fill="var(--card-background-color, #fff)" stroke="${esc(sc)}" stroke-width="${(1.2 * u).toFixed(2)}" opacity="0.95"></rect>`
+                + `<text x="${(l.box.x + 6 * u).toFixed(1)}" y="${(l.box.y + l.box.h / 2 + 3.4 * u).toFixed(1)}" font-size="${(9.5 * u).toFixed(2)}" font-weight="700" fill="var(--primary-text-color, #212121)">${esc(l.text)}</text></g>`;
         }
 
         // ── buses: top line's buses above the others, focused bus on top.
@@ -3280,6 +3760,17 @@ class Gtfs2LiveCard extends HTMLElement {
         .time { font-size: 20px; font-weight: 700; color: var(--primary-text-color); font-variant-numeric: tabular-nums; }
         .day-tag { font-size: 11px; color: var(--secondary-text-color); border: 1px solid var(--divider-color); border-radius: 6px; padding: 0 5px; align-self: center; flex: none; }
         .dest-inline { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        /* journey rows: the points in order under the departure, wrapping
+           freely on a narrow card, each a numbered disc, a name and a clock */
+        .jsteps { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 4px; font-size: 12px; color: var(--secondary-text-color); }
+        .jstep { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+        .jstep b { color: var(--primary-text-color); font-weight: 600; font-variant-numeric: tabular-nums; }
+        .jname { max-width: 11em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .jnum { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; font-size: 11px; font-weight: 700; flex: none; }
+        .jleg { display: inline-flex; align-items: center; gap: 5px; }
+        .jleg b { color: var(--primary-text-color); font-weight: 600; font-variant-numeric: tabular-nums; }
+        .jwait, .jbroken { font-size: 11px; }
+        .jbroken { color: var(--gtfs2-late-color, #e65100); }
         .rt-icon { color: #4caf50; display: inline-flex; flex: none; }
         .sub.strike { text-decoration: line-through; }
         .sub { font-size: 12px; }

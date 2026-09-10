@@ -78,6 +78,11 @@ export default {
         close: "Schließen",
         feed_stale: "Positionen eingefroren ({t}) · Betriebsschluss?",
         line_prefix: "{l}: ",
+        map_start: "Abfahrt",
+        map_end: "Ankunft",
+        journey: "Fahrt",
+        transfer_wait: "Umstieg · {n} min",
+        no_connection: "kein Anschluss gefunden",
     },
 
     modes: {

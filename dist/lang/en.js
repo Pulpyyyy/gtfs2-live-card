@@ -79,6 +79,11 @@ export default {
         close: "Close",
         feed_stale: "positions frozen ({t}) · end of service?",
         line_prefix: "{l}: ",
+        map_start: "Departure",
+        map_end: "Arrival",
+        journey: "Journey",
+        transfer_wait: "change · {n} min",
+        no_connection: "no onward departure found",
     },
 
     modes: {

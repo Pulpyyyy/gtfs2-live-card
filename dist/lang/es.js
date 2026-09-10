@@ -78,6 +78,11 @@ export default {
         close: "Cerrar",
         feed_stale: "posiciones congeladas ({t}) · ¿fin de servicio?",
         line_prefix: "{l}: ",
+        map_start: "Salida",
+        map_end: "Llegada",
+        journey: "Trayecto",
+        transfer_wait: "transbordo · {n} min",
+        no_connection: "sin conexión encontrada",
     },
 
     modes: {
