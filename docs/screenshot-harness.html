@@ -233,6 +233,10 @@ window.fetch = (input, init) => {
   return realFetch(input, init);
 };
 
+// une horloge GTFS, HH:MM:SS depuis minuit
+const clock = (s) => [s / 3600, (s % 3600) / 60, s % 60]
+  .map((v) => String(Math.floor(v)).padStart(2, "0")).join(":");
+
 /* Le fichier de tracé, au format que gtfs2 exporte : le tracé en LineString,
  * puis un Point par arrêt. */
 function routeGeojson(file) {
@@ -244,7 +248,11 @@ function routeGeojson(file) {
         geometry: { type: "LineString", coordinates: n.shape } },
       ...n.stops.map((s) => ({
         type: "Feature",
-        properties: { stop_id: s.stop_id, stop_name: s.stop_name, stop_sequence: s.stop_sequence },
+        // gtfs2 date chaque point de l'horaire du trajet dessiné ; l'extrait
+        // n'en porte pas, on pose un passage toutes les 90 s, ce qui est ce
+        // que la carte lit pour situer dans le temps un point du trajet
+        properties: { stop_id: s.stop_id, stop_name: s.stop_name, stop_sequence: s.stop_sequence,
+                      departure_time: clock(6 * 3600 + s.stop_sequence * 90) },
         geometry: { type: "Point", coordinates: [s.lon, s.lat] },
       })),
     ],
@@ -544,6 +552,33 @@ try {
                 mode_icons: false }, null, null, 88), null);
     only(card({ entity: alertPlain, mode_icons: false }, null, null, 88), null);
     only(card({ entity: rest, mode_icons: false }, null, null, 88), null);
+  } else if (page === "journey") {
+    // Un trajet à quatre points : tram A pris à Parc Floral, descente
+    // possible au Zénith, correspondance à la gare d'Orléans (des quais du
+    // tram à ceux des bus, à pied), bus 40 jusqu'à Gaston Galloux. Les deux
+    // capteurs sont ceux des lignes, avec pour bouts ceux du trajet ; les
+    // départs du bus sont posés à quelques minutes de l'arrivée du tram,
+    // comme un vrai horaire cadencé le ferait, pour montrer l'attente.
+    stage.style.gridTemplateColumns = "500px";
+    const tramRows = deps["tram-a"];
+    const legA = sensor("tram-a", { suffix: "j1", delays: [0, 62, 0, 130, 0, 0], duration: 21, attributes: {
+      friendly_name: "A — Parc Floral → Gare d'Orléans",
+      origin_station_stop_id: "ORLEANS:StopArea:TFLORA1", origin_station_stop_name: "Parc Floral",
+      destination_station_stop_id: "ORLEANS:StopArea:TGARDO1", destination_station_stop_name: "Gare d'Orléans",
+    } });
+    const waits = [300, 480, 240, 600, 360, 420];
+    const busTheo = tramRows.map((r, i) => r.time + 21 * 60 + waits[i]);
+    const busLate = [0, 0, 120, 0, 0, 0];
+    const legB = sensor("bus-40", { suffix: "j2", duration: 12, attributes: {
+      friendly_name: "40 — Gare d'Orléans → Gaston Galloux",
+      destination_station_stop_id: "ORLEANS:StopArea:00026501", destination_station_stop_name: "Gaston Galloux",
+      next_departures: busTheo.map(iso),
+      next_departures_realtime: busTheo.map((t, i) => iso(t + busLate[i])),
+      next_delays_realtime: busLate,
+      next_departures_durations: busTheo.map(() => 12),
+    } });
+    card({ journey: [legA, "Zénith", { entity: legB, margin: 4 }], title: "Parc Floral → Gaston Galloux", max_departures: 3 },
+         null, null, 500);
   } else if (page === "departures") {
     // Le tableau seul, carte repliée : retards, passages théoriques, jours.
     stage.style.gridTemplateColumns = "420px";

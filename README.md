@@ -11,6 +11,7 @@ A Lovelace card for the [gtfs2](https://github.com/vingerha/gtfs2) Home Assistan
 - **Departures board**: scheduled and realtime times merged from one or several gtfs2 start/stop sensors, delay chips (on time, +n min), day tags for departures beyond today, stop alerts, colored line badges with destination on every row, and an optional arrival-and-journey-time line per departure (`show_duration`). The whole pane can switch to a timetable layout (`departures_view: table`): departure, arrival, duration, mode, status and line columns, sorted by departure time.
 - **Line map**: a vector base map (MapLibre, VersaTiles styles on OpenStreetMap data) following the HA theme (light/dark), route shapes with direction arrows, ordered stops that name themselves once the view is tight enough, origin station pin, and realtime vehicle positions carrying their transport-mode icon with a heading arrow orbiting the marker. Marker size follows the zoom, so a whole-network view stays readable where a dozen vehicles would otherwise clot together. Hovering or tapping a stop names it and lists the other configured lines calling there, and stays quiet when the map already shows the name in full.
 - **Vehicle tracking**: click a vehicle to follow it: animated zoom, passed route dashed in grey, upcoming route in the line color, named next stop, estimated speed in a popup anchored to the marker. The view glides with the vehicle on every refresh and returns to the fitted view with a hint when the vehicle leaves the feed.
+- **Journey**: an ordered list of sensors and stops (`journey`) becomes a door-to-door board, one row per departure with every numbered point and its clock, the wait at each change, and the final arrival with the total time; the map draws the ridden slice of each line, the walk between the platforms of a change, and a numbered disc on every point. A line picked from its badge shows its plain departures and its whole shape as usual.
 - **Line highlight**: click a line badge to raise that line above the others, filter the departures board and show its origin pin; the header shows the full direction (origin → destination).
 - **Minimal YAML**: a list of gtfs2 sensors is enough. Everything else (positions file, route file, official line name, official route color, transport mode and its icon, origin station) derives from the sensor attributes, and is remembered across page reloads so an out-of-service line keeps its identity at night. Any explicit YAML value always wins over a derived one.
 - **Visual editor**: pick your gtfs2 sensors in a single multi-entity field and the lines build themselves; everything else (map appearance, per line overrides, explicit station coordinates) sits in collapsible sections, each line showing what the card derived from its sensor. Covers the whole configuration, in **five languages** (en, fr, de, es, pt: the gtfs2 project languages), resolved from the HA locale with a `language:` override.
@@ -82,6 +83,18 @@ lines:
   - sensor.station_line_a_outbound
 ```
 
+A journey chains several sensors, each ridden from its origin to its destination, and numbers its points: 0 at the start, one per step, the last at the final destination. A step is either another sensor (a change: the board waits for the first departure after the previous leg's arrival plus a margin) or the name or id of a stop on the running leg (a place worth its own number, no change). The board shows one row per journey, the map draws the ridden slices and the numbered points, and the sensors need no `lines` entry of their own.
+
+```yaml
+type: custom:gtfs2-live-card
+title: "Home → work"
+journey:
+  - sensor.station_line_40_outbound        # leg 1, from its origin to its destination
+  - "Central station"                      # a stop of leg 1 worth a number
+  - entity: sensor.central_line_a_outbound # leg 2: a change at leg 1's destination
+    margin: 5                              # minutes needed for that change (default journey_margin)
+```
+
 ![Visual editor](images/editor-light.png)
 
 *The visual editor, sections open: the lines are picked in one field, and each shows what the card derived from its sensor.*
@@ -91,7 +104,9 @@ lines:
 | Option | Required | Description |
 |---|---|---|
 | `lines` | yes* | List of lines: either plain entity ids (`- sensor.xxx`) or objects `{entity?, positions_url?, route_url?, line?, color?}` overriding the derived values. |
-| `entity` | yes* | Legacy single-sensor form (equivalent to a one-entry `lines`). *Either `lines` or `entity` is required. |
+| `entity` | yes* | Legacy single-sensor form (equivalent to a one-entry `lines`). *Either `lines`, `entity` or `journey` is required. |
+| `journey` | no | Ordered steps of a journey: `{entity, margin?}` (or a bare sensor id) rides that sensor's leg, `{stop}` (or a bare stop name or id) numbers a stop of the running leg. The sensors are added to the lines when not listed. YAML only, the visual editor keeps it as is. |
+| `journey_margin` | no | Minutes needed to change legs when the step gives no `margin` (default 3). |
 | `title` | no | Extra title line. Omitted: no title (badges only). `title: ""` also hides it. |
 | `mode_icons` | no | Transport-mode chip on the line badges: the card's own glyph for the sensor's route type, or the mdi icon you chose yourself (default `true`). |
 | `show_departures` | no | The departures pane, header included (default `true`): `false` makes a map-only card. |

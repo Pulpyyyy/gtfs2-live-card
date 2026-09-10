@@ -72,6 +72,7 @@ positions pour servir l'instantané.
 | Page | Ce qu'elle montre |
 |---|---|
 | `hero` | les trois lignes ensemble : départs fusionnés et carte |
+| `journey` | un trajet à deux tronçons : tableau enchaîné, points numérotés sur la carte |
 | `lines` | une carte par ligne, badges aux couleurs du réseau |
 | `departures` | le tableau seul, retards et passages théoriques |
 | `board` | les départs en tableau (departures_view: table), durées colorées |

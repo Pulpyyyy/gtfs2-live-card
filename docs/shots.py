@@ -52,6 +52,7 @@ IMAGES = ROOT / "images"
 # screenshot is taken at that size, so a page that grows is not cropped.
 PAGES = {
     "hero":       (560, 920),   # the three lines together, departures and map
+    "journey":    (560, 920),   # a two-leg journey: chained board, numbered points on the map
     "lines":      (740, 560),   # one card per line, side by side
     "departures": (470, 780),   # the board alone, map collapsed
     "board":      (680, 470),   # the departures pane as a table (departures_view: table)
