@@ -71,19 +71,22 @@ positions pour servir l'instantané.
 
 | Page | Ce qu'elle montre |
 |---|---|
-| `hero` | les trois lignes ensemble : départs fusionnés et carte |
-| `journey` | un trajet à deux tronçons : tableau enchaîné, points numérotés sur la carte |
-| `lines` | une carte par ligne, badges aux couleurs du réseau |
-| `departures` | le tableau seul, retards et passages théoriques |
-| `board` | les départs en tableau (departures_view: table), durées colorées |
-| `map` | la carte seule, véhicules sur leur tracé |
-| `noposition` | une source sans temps réel : le tracé et ses arrêts, sans véhicule |
-| `entete12` | l'entête à trois tailles : les rangées de cartouches naissent du contenu |
-| `selected` | une ligne choisie par son badge : départs filtrés, tracé mis en avant |
-| `popup` | un véhicule suivi, sa bulle ouverte : terminus, prochain arrêt, vitesse |
-| `narrow` | une colonne étroite, panneau latéral ou téléphone |
+| `hero` | les trois lignes ensemble, vue Lignes : badges, départs fusionnés et carte |
+| `selected` | le tram A choisi par son badge : départs, tracé et véhicules réduits aux siens |
+| `journey` | deux trajets sur un tableau : L'Indien → Halmagrand, que la carte trouve par le tram A puis le tram B, la correspondance ouverte sur sa frise, et le bus 40 depuis la gare |
+| `destinations` | l'entête départ puis arrivée : trois départs, une arrivée atteinte de deux façons, le retour rangé sous son propre départ, une alerte, une couleur forcée |
+| `struck` | ce que le flux raye : une course supprimée, une qui ne s'arrête pas, des alertes sur leurs lignes ; sur un trajet, un arrêt sauté à la place de son heure |
+| `boarding` | un trajet pris et quitté en route sur le tram A : des courses qui ne prennent personne à la montée, une qui ne dépose personne à la descente, puis la même montée sans aucune course qui y prenne |
+| `board` | les départs en tableau (vue Lignes), durées colorées |
+| `popup` | un véhicule suivi, sa bulle ouverte : terminus, prochain arrêt |
 | `editor` | l'éditeur visuel, sections ouvertes |
 | `pips` | les pastilles du README : chaque marque ronde, seule dans sa tuile |
+
+Ce sont les seules pages que `shots.py` photographie, et chaque image sert au
+README. Le harnais en garde d'autres (`lines`, `departures`, `map`,
+`noposition`, `entete12`, `narrow`, `combos`, `paris`) comme pages de test, à
+ouvrir dans un navigateur avec `?page=<nom>` ; elles ne produisent aucune
+image.
 
 La page `pips` ne garde que la pastille visée de chaque cartouche, par une
 feuille injectée dans leur shadow root, et ne force **aucun** état par du
@@ -94,9 +97,14 @@ bien ce que le code produit, et la légende ne peut pas mentir sur l'apparence
 réelle. Cette page déroge au nommage : sa planche est découpée (Pillow) en une
 petite image par pastille, `pip-<nom>-<mode>.png`, celles que le tableau du
 README embarque — chaque découpe se centre sur l'encre de sa tuile plutôt que
-sur une géométrie tenue à la main. Quatre tuiles gardent le cartouche entier,
-marque au bon coin, pour les schémas de position du tableau : là aussi c'est
-une vraie option, `mode_icons: false`, qui isole la marque visée, pas du CSS.
+sur une géométrie tenue à la main. Quatre tuiles, plus larges, gardent la puce
+entière, marque au bon coin, pour les schémas de position du tableau ; leur
+découpe se centre sur le fond gris de la puce, que le seuil des petites
+marques ne voit pas.
+
+Une puce de destination n'existe que dans la vue Trajets : chaque carte de la
+page porte donc un trajet entre les deux bouts de son capteur, ce qui l'ouvre
+sur ses destinations.
 
 Chaque page existe en `mode=light` et `mode=dark`, et accepte `lang=` (les cinq
 langues de la carte).
@@ -125,7 +133,15 @@ faire. `shots.py` sert donc le dépôt sur un port libre, le temps de la prise.
 
 **Le harnais dit quand il a fini.** La carte charge sa langue, ses positions et
 ses tuiles de façon asynchrone ; le préfixe `ready` dans le titre signale que
-tout est en place, bulle ouverte comprise pour la page `popup`.
+tout est en place, bulle ouverte comprise pour la page `popup`. Une page qui n'a
+toujours pas ce qu'elle doit montrer au bout de trente secondes s'annonce
+`late` au lieu de `ready`, et `shots.py` s'arrête sans rien écrire : une
+capture à moitié faite ressemble trop à une bonne pour passer inaperçue.
+
+**Les vraies courses.** Chaque capteur du harnais liste les `trip_id` de
+l'instantané. C'est ce qui relie un passage au véhicule qui l'assure : une
+ligne choisie ne garde sur la carte que les véhicules des courses de son
+tableau, et avec des identifiants inventés elle n'en garderait aucun.
 
 **Le pas de temps de la vitesse.** La bulle n'affiche une vitesse qu'après
 avoir vu un véhicule à deux positions successives. La page `popup` avance donc
@@ -137,4 +153,4 @@ Données du réseau TAO d'Orléans Métropole (Keolis), diffusées en open data 
 [GTFS](https://chouette.enroute.mobi/api/v1/datas/keolis_orleans/gtfs.zip) et
 [GTFS-RT](https://ara-api.enroute.mobi/tao/gtfs/vehicle-positions), référencés
 sur [data.orleans-metropole.fr](https://data.orleans-metropole.fr/).
-Fonds de carte © OpenStreetMap, tuiles © CARTO.
+Fond de carte : styles et tuiles [VersaTiles](https://versatiles.org/), données © contributeurs OpenStreetMap.

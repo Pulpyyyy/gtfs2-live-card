@@ -5,7 +5,7 @@ The harness loads the real card with a frozen snapshot of the TAO network in
 Orléans (see data/). Chrome opens each page and writes a PNG into images/.
 
     python docs/shots.py                 every page, light and dark
-    python docs/shots.py hero lines      only those pages
+    python docs/shots.py hero selected   only those pages
     python docs/shots.py --lang en       in another language
 
 The card fetches its translations as ES modules, which a file:// page is not
@@ -52,33 +52,31 @@ IMAGES = ROOT / "images"
 # screenshot is taken at that size, so a page that grows is not cropped.
 PAGES = {
     "hero":       (560, 920),   # the three lines together, departures and map
-    "journey":    (560, 920),   # a two-leg journey: chained board, numbered points on the map
-    "lines":      (740, 560),   # one card per line, side by side
-    "departures": (470, 780),   # the board alone, map collapsed
-    "board":      (680, 470),   # the departures pane as a table (departures_view: table)
-    "map":        (520, 620),   # the map alone, vehicles on their shapes
-    "noposition": (520, 620),   # a source with no realtime: route drawn anyway
-    "entete12":   (560, 760),   # twelve badges, one selected: the full-height text zone
-    "pips":       (1536, 90),   # the round marks in a row, cut into one file each
-    "selected":   (540, 900),   # one line picked from its header badge
+    "selected":   (540, 900),   # one line picked from its badge in the Lines view
+    "journey":    (560, 920),   # a line and a two-leg journey: one board by departure, the change on its timeline
+    "destinations": (470, 900), # the header: three departures, the arrival from one, ways to leave, a forced colour
+    "struck":     (470, 1100),  # a cancelled run, one not stopping, alerts on their rows; a skipped stop on a timeline
+    "boarding":   (540, 900),   # runs that take nobody on or set nobody down where the journey needs them
+    "board":      (680, 470),   # the departures pane as a table (Lines view)
     "popup":      (520, 640),   # one vehicle tracked, its bubble open
-    # the narrow page asks for a sidebar-width column and the harness sizes
-    # the card inside it
-    "narrow":     (500, 700),   # a sidebar-width column
     "editor":     (460, 900),   # the visual editor, sections open
+    "pips":       (2264, 120),  # the chip's marks in a row, cut into one file each
 }
 
-# The pips page lays the round marks in one row of 72 px tiles, each mark
-# centred in its tile, then four whole badges as corner-position schematics;
-# the sheet is cut into one small file per tile (pip-<name>-<mode>.png),
-# which is what the README's legend table embeds. Each entry is the crop
-# size in CSS px: 44 holds a lone mark, 76 a badge and its overhangs. The
-# names follow the tiles left to right: the order is the harness's.
-PIPS = {"bus": 44, "tram": 44, "metro": 44, "train": 44, "trolleybus": 44,
-        "ferry": 44, "mute": 44, "alert": 44, "works": 44, "incident": 44,
-        "tomorrow": 44, "days": 44, "never": 44,
-        "pos-br": 76, "pos-tl": 76, "pos-tr": 76, "pos-bl": 76}
-PIP_TILE = 88   # CSS px, one tile of the pips page grid
+# The pips page lays the chip's marks in one row, each alone and centred in
+# its tile: the line plate (its mode on the band) and the three state marks
+# in 88 px tiles, then
+# four whole chips in 280 px tiles as corner-position schematics. The sheet
+# is cut into one small file per tile (pip-<name>-<mode>.png), which is what
+# the README's legend table embeds. Each entry is (tile width, crop width,
+# crop height) in CSS px: 48 holds the 26 x 34 px plate, 30 a 22 px mark, and
+# 236 x 84 a chip with its marks overhanging. The names follow the tiles left
+# to right: the order is the harness's.
+PIPS = {"bus": (88, 48, 48), "tram": (88, 48, 48), "metro": (88, 48, 48), "train": (88, 48, 48),
+        "trolleybus": (88, 48, 48), "ferry": (88, 48, 48),
+        "mute": (88, 30, 30), "alert": (88, 30, 30), "works": (88, 30, 30), "incident": (88, 30, 30),
+        "tomorrow": (88, 30, 30), "days": (88, 30, 30), "never": (88, 30, 30),
+        "pos-mode": (280, 236, 84), "pos-tl": (280, 236, 84), "pos-tr": (280, 236, 84), "pos-bl": (280, 236, 84)}
 
 CHROME_CANDIDATES = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -232,16 +230,22 @@ def shoot(chrome, port, page, mode, lang, size, scale, out):
         deadline = time.time() + READY_TIMEOUT
         m = None
         while time.time() < deadline:
-            m = re.match(r"ready (\d+)x(\d+) ", tab.eval("document.title") or "")
+            m = re.match(r"(ready|late) (\d+)x(\d+) ", tab.eval("document.title") or "")
             if m:
                 break
             time.sleep(0.2)
+        # "late": the harness gave up waiting for what the page must show (a
+        # destination chip, the base map at rest...). A picture of that is
+        # wrong and looks almost right, so the run stops here
+        if m and m.group(1) == "late":
+            raise SystemExit(f"{page}/{mode}: the page never showed what it is for "
+                             f"(the harness's ready() check); nothing written")
         if not m:
             raise SystemExit(f"{page}/{mode}: the harness never said ready "
                              f"(title: {tab.eval('document.title')!r})")
         # only the height is measured: the width stays as configured, since a
         # fluid page stretches to its window and measuring it would be circular
-        hh = int(m.group(2))
+        hh = int(m.group(3))
         if hh != h:
             tab.viewport(w, hh, scale)
             time.sleep(0.4)   # one layout pass at the new height
@@ -263,23 +267,29 @@ def crop_pips(sheet, mode, scale):
     """
     from PIL import Image, ImageChops
     img = Image.open(sheet).convert("RGB")
-    row = len(PIPS) * PIP_TILE * scale
+    row = sum(tile for tile, _, _ in PIPS.values()) * scale
     x0 = (img.width - row) // 2
     bg = Image.new("RGB", img.size, img.getpixel((0, 0)))
-    # > 24 keeps antialiasing and the page background out of the bbox
-    ink = ImageChops.difference(img, bg).convert("L").point(lambda v: v > 24 and 255)
+    diff = ImageChops.difference(img, bg).convert("L")
+    # > 24 keeps antialiasing and the page background out of a mark's bbox;
+    # a whole chip is centred on its own box, whose grey is only some 15
+    # levels off the page: at 24 the crop saw the plate and the words alone,
+    # all on the left, and cut the chip's right end off
+    ink = diff.point(lambda v: v > 24 and 255)
+    box_ink = diff.point(lambda v: v > 6 and 255)
     total = 0
-    for i, (name, crop) in enumerate(PIPS.items()):
-        tx = x0 + i * PIP_TILE * scale
-        box = ink.crop((tx, 0, tx + PIP_TILE * scale, img.height)).getbbox()
+    tx = x0
+    for i, (name, (tile, cw, ch)) in enumerate(PIPS.items()):
+        box = (box_ink if name.startswith("pos-") else ink).crop((tx, 0, tx + tile * scale, img.height)).getbbox()
         if not box:
             raise SystemExit(f"pips/{mode}: tile {i} ({name}) holds no mark")
         cx = tx + (box[0] + box[2]) // 2
         cy = (box[1] + box[3]) // 2
-        half = crop * scale // 2
+        hw, hh = cw * scale // 2, ch * scale // 2
         out = IMAGES / f"pip-{name}-{mode}.png"
-        img.crop((cx - half, cy - half, cx + half, cy + half)).save(out)
+        img.crop((cx - hw, cy - hh, cx + hw, cy + hh)).save(out)
         total += out.stat().st_size
+        tx += tile * scale
     return total
 
 

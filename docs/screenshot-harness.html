@@ -118,6 +118,14 @@ class HaForm extends HTMLElement {
   _input(label, value, kind, field) {
     const box = this._shell(label);
     const val = document.createElement("div");
+    // une liste montre le libellé de l'option choisie, comme Home Assistant,
+    // pas sa valeur : « Sensor's origin », jamais « @origin »
+    const opts = field?.selector?.select?.options || [];
+    const labelOf = (v) => {
+      const o = opts.find((x) => (typeof x === "object" ? x.value : x) === v);
+      return o && typeof o === "object" ? o.label : v;
+    };
+    if (kind === "select") value = Array.isArray(value) ? value.map(labelOf) : labelOf(value);
     const shown = value === "" || value == null
       ? (kind === "entity" ? "" : "—")
       : Array.isArray(value) ? value.join(", ") : String(value);
@@ -222,6 +230,14 @@ window.fetch = (input, init) => {
   const url = String(input?.url || input);
   // `\w` matches the underscore, so the line name has to stop before it or
   // "tram-a_route.json" would be read as a line called "tram-a_route"
+  // le fichier de tronçon d'un capteur, nommé par son attribut leg_geojson_file
+  const lm = url.match(/([a-z0-9-]+_leg_[a-z0-9]+)\.json(\?|$)/i);
+  if (lm && LEGS[lm[1]]) {
+    return Promise.resolve(new Response(JSON.stringify(legGeojson(lm[1])), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+  }
   const m = url.match(/([a-z0-9-]+?)(_route)?\.json(\?|$)/i);
   if (m && POS[m[1]]) {
     const body = m[2] ? routeGeojson(m[1]) : POS[m[1]];
@@ -257,6 +273,37 @@ function routeGeojson(file) {
       })),
     ],
   };
+}
+
+/* Le fichier de tronçon, au format que gtfs2 exporte : pour chaque course
+ * listée par le capteur, l'heure prévue à chaque arrêt de la ligne (un
+ * passage toutes les 90 s depuis l'origine du capteur), et sur les premières
+ * courses l'heure attendue et le retard, comme un flux qui couvre tous les
+ * arrêts (TAO le fait). */
+const LEGS = {};
+function legGeojson(key) {
+  const L = LEGS[key];
+  const n = network[L.file];
+  const trips = {};
+  L.theo.forEach((t, i) => {
+    const stops = {};
+    for (const s of n.stops) {
+      const sch = t + (s.stop_sequence - L.originSeq) * 90;
+      const st = { sequence: s.stop_sequence, scheduled_arrival: iso(sch), scheduled: iso(sch) };
+      if (i < L.rtRuns) { st.expected = iso(sch + (L.delays[i] || 0)); st.delay = L.delays[i] || 0; }
+      // un arrêt que le flux raye sur cette course : skipped, sans heure attendue
+      if ((L.skipped?.[i] || []).includes(s.stop_name)) { delete st.expected; delete st.delay; st.skipped = true; }
+      // un arrêt où cette course ne prend personne, ou ne dépose personne :
+      // pickup_type / drop_off_type 1, comme gtfs2 les recopie de stop_times
+      if ((L.noBoard?.[i] || []).includes(s.stop_name)) st.pickup_type = 1;
+      if ((L.noAlight?.[i] || []).includes(s.stop_name)) st.drop_off_type = 1;
+      stops[s.stop_id] = st;
+    }
+    trips[L.tripIds[i]] = { stops };
+  });
+  return { type: "FeatureCollection",
+           properties: { trip_id: L.tripIds[0], route_id: n.route_id, direction_id: String(n.direction_id), realtime: L.rtRuns > 0 },
+           features: [], trips };
 }
 
 /* ── Les capteurs, tels que gtfs2 les expose ─────────────────────────────
@@ -307,10 +354,47 @@ function sensor(file, opts = {}) {
       route_route_id: n.route_id,
       trip_direction_id: n.direction_id,
       vehicle_positions_file: `${file}.json`,
+      // la course de chaque passage, ce par quoi le fichier de tronçon est
+      // indexé, sous le nom que gtfs2 publie
+      // la vraie course de l'instantané quand il la donne : c'est ce qui
+      // relie un passage au véhicule qui l'assure, et la carte ne garde
+      // que ceux-là quand une ligne est choisie
+      next_departures_trips: rows.map((r, i) => r.trip_id || `${id}-trip-${i}`),
       gtfs_rt_updated_at: iso(Math.round(Date.parse(snap.taken_at) / 1000)),
       ...(opts.attributes || {}),
     },
   };
+  // la course derrière chaque heure temps réel, dans l'ordre des heures,
+  // comme gtfs2 la publie : c'est par elle que la carte apparie le temps
+  // réel à son horaire. Posée après les surcharges, sur leurs propres ids
+  {
+    const at = states[id].attributes;
+    if (!at.next_departures_realtime_trips && Array.isArray(at.next_departures_realtime)
+        && at.next_departures_realtime.length === at.next_departures_trips.length) {
+      at.next_departures_realtime_trips = [...at.next_departures_trips];
+    }
+  }
+  // un capteur qui nomme un fichier de tronçon : le harnais le sert d'après
+  // les passages du capteur, tels qu'ils sont après les surcharges
+  if (opts.leg) {
+    const at = states[id].attributes;
+    const key = `${file}_leg_${opts.suffix || "x"}`;
+    at.leg_geojson_file = `${key}.json`;
+    const originId = String(at.origin_station_stop_id || "").split(": ")[0];
+    const origin = n.stops.find((s) => s.stop_id === originId) || n.reference;
+    LEGS[key] = {
+      file,
+      // iso() shifts every clock it formats: hand it the unshifted epoch back
+      theo: at.next_departures.map((v) => Math.round(Date.parse(v) / 1000) - SHIFT),
+      delays: at.next_delays_realtime || [],
+      tripIds: at.next_departures_trips,
+      originSeq: origin.stop_sequence,
+      rtRuns: opts.rtRuns ?? 3,
+      skipped: opts.skipped || null,
+      noBoard: opts.noBoard || null,
+      noAlight: opts.noAlight || null,
+    };
+  }
   return id;
 }
 
@@ -353,7 +437,11 @@ function card(config, caption, swatch, width) {
     cell.appendChild(cap);
   }
   const el = document.createElement("gtfs2-live-card");
-  el.setConfig({ language: lang, ...config });
+  // la configuration d'origine : la carte réécrit la sienne, et un test qui
+  // reconstruit la carte (la mémoire des choix) en a besoin telle quelle
+  // la langue vient du profil, hass.locale, comme dans Home Assistant
+  el.harnessConfig = { ...config };
+  el.setConfig({ ...config });
   el.hass = hass;
   cell.appendChild(el);
   stage.appendChild(cell);
@@ -382,19 +470,46 @@ function openSections(ed) {
   mo.observe(ed, { childList: true, subtree: true });
 }
 
-/* Sélectionne une ligne depuis son badge d'en-tête, comme le ferait un clic.
- * `li` est l'indice de la ligne dans la liste `lines` de la configuration. */
+/* Choisit une destination dans l'entête, comme le ferait un clic. `li` est
+ * le rang de la puce : sur une carte de lignes qui vont chacune ailleurs,
+ * celui de la ligne dans la liste `lines` de la configuration. */
 async function selectLine(el, li) {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   for (let i = 0; i < 60; i++) {
-    const badge = el.shadowRoot?.querySelector(`[data-action="line"][data-li="${li}"]`);
-    if (badge) {
-      badge.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+    // une puce de destination sur une carte de trajets, le badge de la ligne
+    // sur une carte de lignes : c'est lui qui filtre dans la vue Lignes
+    const root = el.shadowRoot;
+    const chip = root?.querySelectorAll('#header .dest[data-action="dest"]')[li]
+      || root?.querySelectorAll('#header .badge[data-action="line"]')[li];
+    if (chip) {
+      chip.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
       await wait(1500);   // le temps que la carte se recadre et charge ses tuiles
       return;
     }
     await wait(100);
   }
+}
+
+/* Le flux raye des courses après coup : une fois la carte dessinée, le
+ * capteur perd la course de ses listes (ce que fait gtfs2, qui passe à la
+ * suivante) et n'en garde que l'id dans cancelled_trips_realtime ou
+ * skipped_trips_realtime. Un nouvel objet hass, avec de nouveaux états,
+ * puisque la carte compare les états par identité. */
+async function strike(el, hits) {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < 60 && !el.shadowRoot?.querySelector(".row"); i++) await wait(100);
+  const next = { ...states };
+  for (const [id, k, kind] of hits) {
+    const at = { ...states[id].attributes };
+    const tid = at.next_departures_trips[k];
+    for (const key of ["next_departures", "next_departures_realtime", "next_delays_realtime",
+                       "next_departures_durations", "next_departures_trips", "next_departures_realtime_trips"]) {
+      if (Array.isArray(at[key])) at[key] = at[key].filter((_, i) => i !== k);
+    }
+    at[kind === "cancelled" ? "cancelled_trips_realtime" : "skipped_trips_realtime"] = [tid];
+    next[id] = { ...states[id], attributes: at, last_updated: new Date().toISOString() };
+  }
+  el.hass = { ...hass, states: next };
 }
 
 /* Ouvre la bulle d'un véhicule, comme le ferait un clic dessus.
@@ -440,31 +555,38 @@ try {
     card({ lines: [tramA, tramB, bus40], title: "Gare d'Orléans", max_departures: 6 },
          null, null, 500);
   } else if (page === "lines") {
-    // Une ligne par carte : le badge prend la couleur officielle du réseau et
-    // l'icône de son mode, tram ou bus.
+    // Une ligne par carte : sa seule destination, le médaillon à la couleur
+    // officielle du réseau et au glyphe de son mode, tram ou bus.
     stage.style.gridTemplateColumns = "340px 340px";
     stage.style.alignItems = "start";
     card({ entity: tramA, max_departures: 4 }, "Tram A — Gare d'Orléans", COLORS["tram-a"], 340);
     card({ entity: tramB, max_departures: 4 }, "Tram B — Halmagrand", COLORS["tram-b"], 340);
     card({ entity: bus40, max_departures: 4 }, "Bus 40 — Gare d'Orléans", COLORS["bus-40"], 340);
   } else if (page === "pips") {
-    /* Les pastilles du README : chaque marque ronde du cartouche, seule et
-     * centrée dans une tuile de 72 px, sur de vraies lignes et avec les vrais
-     * glyphes. shots.py photographie la rangée puis la découpe en une petite
-     * image par pastille, celles que le tableau du README embarque.
+    /* Les marques du README : la plaque de ligne (numéro, mode en bande au
+     * pied) et les trois marques d'état de la puce de destination, chacune
+     * seule et centrée dans une tuile de
+     * 88 px, sur de vraies lignes et avec les vrais glyphes ; puis quatre
+     * puces entières, une par marque, pour les schémas de position.
+     * shots.py photographie la rangée puis la découpe en une image par tuile,
+     * celles que le tableau du README embarque.
      *
      * Les états sont forcés par les données, jamais par du CSS : la ligne au
-     * repos reçoit next_service_in_days, la ligne muette pointe vers un
-     * fichier de positions qui n'existe pas, ce qui est exactement ce que
-     * voit la carte quand une source disparaît. Le CSS injecté ne fait que
-     * masquer le cartouche autour de la pastille visée. */
-    stage.style.gridTemplateColumns = `repeat(17, 88px)`;
+     * repos reçoit next_service_in_days et aucun passage, la ligne muette
+     * pointe vers un fichier de positions qui n'existe pas, ce qui est
+     * exactement ce que voit la carte quand une source disparaît. Le CSS
+     * injecté ne fait que masquer la puce autour de la marque visée. */
+    // les puces entières dans des colonnes plus larges qu'elles : une marque
+    // déborde de 7 px de sa puce, et collée à la voisine elle entrerait dans
+    // sa découpe
+    stage.style.gridTemplateColumns = "repeat(13, 88px) repeat(4, 280px)";
+    stage.style.justifyItems = "center";
     stage.style.alignItems = "start";
     stage.style.padding = "0";
     stage.style.gap = "0";
 
     const only = (el, keep) => {
-      // ne garder que la pastille visée, sans toucher au code : une feuille
+      // ne garder que la marque visée, sans toucher au code : une feuille
       // injectée dans le shadow root, ce que seul un harnais a le droit de
       // faire. La carte construit son shadow root quand elle veut, et il n'y
       // a pas d'évènement pour le dire : on réessaie jusqu'à ce qu'il soit là.
@@ -473,45 +595,47 @@ try {
         if (!root || !root.getElementById("header")) return;
         clearInterval(t);
         if (root.querySelector("style[data-harness]")) return;
-        const s = document.createElement("style");
-        s.dataset.harness = "1";
-        s.textContent = "#dep-head, #dep-body, #map-head, #map-body, #footer,"
-          + " #focus-panel, .titles { display: none !important }"
+        const st = document.createElement("style");
+        st.dataset.harness = "1";
+        st.textContent = "#dep-head, #dep-body, #map-head, #map-body, #footer,"
+          + " #focus-panel, .dtitle, .dirseg, .dwcap, .dways, .caprow { display: none !important }"
           // le cadre ha-card est posé en style inline par le stub : seul un
           // !important le retire
           + " ha-card { background: none !important; border: none !important;"
           + " box-shadow: none !important; overflow: visible !important }"
-          + " .header { padding: 6px !important }"
-          // sans `keep`, le cartouche entier reste : ce sont les schémas de
-          // position du tableau. Avec, il s'efface mais garde ses 60 px : la
-          // pastille, remise en flux dans ce carré centrant, tombe au centre
+          + " .header { padding: 12px 10px !important }"
+          // sans `keep`, la puce entière reste : ce sont les schémas de
+          // position du tableau. Avec, elle s'efface et ne garde que la
+          // marque, remise en flux au centre de la tuile
           + (keep
-            ? " .badge { background: none !important; opacity: 1 !important }"
-              + " .badge-num, .badge-slash, .badge-pip { display: none !important }"
-              + ` .badge-pip.${keep} { display: flex !important; position: static !important }`
+            ? " .drow { grid-template-columns: 1fr !important }"
+              + " .dest { background: none !important; box-shadow: none !important; padding: 0 !important;"
+              + " min-height: 48px !important; justify-content: center !important }"
+              + " .dest > * { display: none !important }"
+              + (keep === "med"
+                ? " .dest > .dplates { display: flex !important }"
+                : ` .dest > .dmark.${keep} { display: flex !important; position: static !important }`)
             : "");
-        root.appendChild(s);
+        root.appendChild(st);
       }, 40);
       return el;
     };
 
-    // les trois états de repos, qui partagent la barre et se distinguent par
-    // la pastille du coin bas-gauche
-    // un capteur au repos n'a PAS de passage du jour : des listes vides,
-    // sinon la regle "un temps reel du jour retient la barre" le voit
-    const rest = sensor("bus-40", { suffix: "rest", attributes: {
-      next_departures: [], next_departures_realtime: [], next_delays_realtime: [],
-      next_service_in_days: 3, next_service_date: "2026-08-27" } });
-    states[rest].state = "unknown";
-    const restTomorrow = sensor("tram-b", { suffix: "rest1", attributes: {
-      next_departures: [], next_departures_realtime: [], next_delays_realtime: [],
-      next_service_in_days: 1, next_service_date: "2026-08-25" } });
-    states[restTomorrow].state = "unknown";
-    const restNever = sensor("tram-a", { suffix: "restx", attributes: {
-      next_departures: [], next_departures_realtime: [], next_delays_realtime: [],
-      next_service_in_days: -1 } });
-    states[restNever].state = "unknown";
+    // les trois états de repos, qui se distinguent par la marque du coin
+    // bas-gauche. Un capteur au repos n'a PAS de passage du jour : des
+    // listes vides, sinon « un temps réel du jour » retient la marque
+    const resting = (file, sfx, days, date) => {
+      const id = sensor(file, { suffix: sfx, attributes: {
+        next_departures: [], next_departures_realtime: [], next_delays_realtime: [],
+        next_service_in_days: days, ...(date ? { next_service_date: date } : {}) } });
+      states[id].state = "unknown";
+      return id;
+    };
+    const restTomorrow = resting("tram-b", "rest1", 1, "2026-08-25");
+    const rest = resting("bus-40", "rest", 3, "2026-08-27");
+    const restNever = resting("tram-a", "restx", -1, null);
     const mute = sensor("bus-40", { suffix: "mute" });
+    const silent = { positions_url: "data/aucun-fichier.json" };
     // les trois marques d'alerte, haut-droite : la cause vient du flux, et
     // sans cause c'est la marque générique qui sort, jamais un cône qui
     // mentirait sur une grève
@@ -522,81 +646,381 @@ try {
     const alertInc = sensor("tram-b", { suffix: "ali", attributes: {
       destination_stop_alert: "Trafic interrompu", alert_effect: "NO_SERVICE" } });
 
-    // six modes en exemple : le glyphe suit route_type (l'attribut est posé
-    // comme gtfs2 le poserait), la couleur du disque celle de la ligne
+    // six modes en exemple : la bande suit route_type (l'attribut est posé
+    // comme gtfs2 le poserait), la plaque garde le numéro et la couleur de
+    // la ligne
     const modeOf = (file, rt, sfx) => sensor(file,
       { suffix: "m" + sfx, attributes: { route_route_type: rt } });
 
+    // une puce de destination n'existe que dans la vue Trajets : un trajet
+    // entre les deux bouts du capteur ouvre la carte sur ses destinations,
+    // une seule ici, sa puce seule
+    const chipCard = (entity, width, over = {}) => {
+      const at = states[entity].attributes;
+      return card({ lines: [{ entity, ...over }],
+                    trips: [[at.origin_station_stop_name, at.destination_station_stop_name]] },
+                  null, null, width);
+    };
+
     // l'ordre des tuiles est le contrat de découpe : PIPS, dans shots.py,
     // nomme les fichiers dans ce même ordre
-    only(card({ entity: modeOf("bus-40", 3, "bus") }, null, null, 88), "mode");
-    only(card({ entity: modeOf("tram-a", 0, "tram") }, null, null, 88), "mode");
-    only(card({ entity: modeOf("tram-b", 1, "metro") }, null, null, 88), "mode");
-    only(card({ entity: modeOf("bus-40", 2, "train") }, null, null, 88), "mode");
-    only(card({ entity: modeOf("tram-a", 11, "trolley") }, null, null, 88), "mode");
-    only(card({ entity: modeOf("tram-b", 4, "ferry") }, null, null, 88), "mode");
-    only(card({ entity: mute, positions_url: "data/aucun-fichier.json" },
-              null, null, 88), "mute");
-    only(card({ entity: alertPlain }, null, null, 88), "alert");
-    only(card({ entity: alertWorks }, null, null, 88), "alert");
-    only(card({ entity: alertInc }, null, null, 88), "alert");
-    only(card({ entity: restTomorrow }, null, null, 88), "svc");
-    only(card({ entity: rest }, null, null, 88), "svc");
-    only(card({ entity: restNever }, null, null, 88), "svc");
-    // les schémas de position : le cartouche entier, sa marque au bon coin.
-    // mode_icons: false — une vraie option, pas du CSS — retire la puce de
-    // mode des trois coins qui ne parlent pas d'elle, pour qu'un seul disque
-    // désigne le coin dont la rangée du tableau parle.
-    only(card({ entity: tramA }, null, null, 88), null);
-    only(card({ entity: mute, positions_url: "data/aucun-fichier.json",
-                mode_icons: false }, null, null, 88), null);
-    only(card({ entity: alertPlain, mode_icons: false }, null, null, 88), null);
-    only(card({ entity: rest, mode_icons: false }, null, null, 88), null);
+    only(chipCard(modeOf("bus-40", 3, "bus"), 88), "med");
+    only(chipCard(modeOf("tram-a", 0, "tram"), 88), "med");
+    only(chipCard(modeOf("tram-b", 1, "metro"), 88), "med");
+    only(chipCard(modeOf("bus-40", 2, "train"), 88), "med");
+    only(chipCard(modeOf("tram-a", 11, "trolley"), 88), "med");
+    only(chipCard(modeOf("tram-b", 4, "ferry"), 88), "med");
+    only(chipCard(mute, 88, silent), "mute");
+    only(chipCard(alertPlain, 88), "alert");
+    only(chipCard(alertWorks, 88), "alert");
+    only(chipCard(alertInc, 88), "alert");
+    only(chipCard(restTomorrow, 88), "rest");
+    only(chipCard(rest, 88), "rest");
+    only(chipCard(restNever, 88), "rest");
+    // les schémas de position : la puce entière, sa marque à son coin
+    only(chipCard(tramA, 240), null);
+    only(chipCard(mute, 240, silent), null);
+    only(chipCard(alertPlain, 240), null);
+    only(chipCard(rest, 240), null);
   } else if (page === "journey") {
-    // Un trajet à quatre points : tram A pris à Parc Floral, descente
-    // possible au Zénith, correspondance à la gare d'Orléans (des quais du
-    // tram à ceux des bus, à pied), bus 40 jusqu'à Gaston Galloux. Les deux
-    // capteurs sont ceux des lignes, avec pour bouts ceux du trajet ; les
-    // départs du bus sont posés à quelques minutes de l'arrivée du tram,
-    // comme un vrai horaire cadencé le ferait, pour montrer l'attente.
+    // Un trajet de L'Indien à Halmagrand que la carte trouve seule : le tram
+    // A jusqu'à De Gaulle, puis le tram B. Les deux quais de De Gaulle sont à
+    // 33 m : la correspondance se fait à pied (deux disques, un numéro), la
+    // carte en déduit le temps de marche. Les deux capteurs nomment un
+    // fichier de tronçon, d'où les heures à chaque point, en gras quand le
+    // temps réel les donne ; les départs du B sont posés quelques minutes
+    // après l'arrivée du A, comme un vrai horaire cadencé, pour montrer
+    // l'attente.
     stage.style.gridTemplateColumns = "500px";
+    const stopOf = (f, name) => network[f].stops.find((s) => s.stop_name === name);
+    const ends = (f, a, b) => {
+      const o = stopOf(f, a), d = stopOf(f, b);
+      return { origin_station_stop_id: o.stop_id, origin_station_stop_name: o.stop_name,
+               destination_station_stop_id: d.stop_id, destination_station_stop_name: d.stop_name };
+    };
+    // le fichier de tronçon du harnais pose un passage toutes les 90 s
+    const run = (f, a, b) => (stopOf(f, b).stop_sequence - stopOf(f, a).stop_sequence) * 90;
     const tramRows = deps["tram-a"];
-    const legA = sensor("tram-a", { suffix: "j1", delays: [0, 62, 0, 130, 0, 0], duration: 21, attributes: {
-      friendly_name: "A — Parc Floral → Gare d'Orléans",
-      origin_station_stop_id: "ORLEANS:StopArea:TFLORA1", origin_station_stop_name: "Parc Floral",
-      destination_station_stop_id: "ORLEANS:StopArea:TGARDO1", destination_station_stop_name: "Gare d'Orléans",
-    } });
+    const legA = sensor("tram-a", { suffix: "j1", leg: true, delays: [0, 62, 0, 130, 0, 0],
+      duration: Math.round(run("tram-a", "L'Indien", "De Gaulle") / 60),
+      attributes: { friendly_name: "A — L'Indien → De Gaulle", ...ends("tram-a", "L'Indien", "De Gaulle") } });
     const waits = [300, 480, 240, 600, 360, 420];
-    const busTheo = tramRows.map((r, i) => r.time + 21 * 60 + waits[i]);
-    const busLate = [0, 0, 120, 0, 0, 0];
-    const legB = sensor("bus-40", { suffix: "j2", duration: 12, attributes: {
-      friendly_name: "40 — Gare d'Orléans → Gaston Galloux",
-      destination_station_stop_id: "ORLEANS:StopArea:00026501", destination_station_stop_name: "Gaston Galloux",
-      next_departures: busTheo.map(iso),
-      next_departures_realtime: busTheo.map((t, i) => iso(t + busLate[i])),
-      next_delays_realtime: busLate,
-      next_departures_durations: busTheo.map(() => 12),
+    const bTheo = tramRows.map((r, i) => r.time + run("tram-a", "L'Indien", "De Gaulle") + waits[i]);
+    const bLate = [0, 0, 120, 0, 0, 0];
+    const bDur = Math.round(run("tram-b", "De Gaulle", "Halmagrand") / 60);
+    const legB = sensor("tram-b", { suffix: "j2", leg: true, duration: bDur, attributes: {
+      friendly_name: "B — De Gaulle → Halmagrand", ...ends("tram-b", "De Gaulle", "Halmagrand"),
+      next_departures: bTheo.map(iso),
+      next_departures_realtime: bTheo.map((t, i) => iso(t + bLate[i])),
+      next_delays_realtime: bLate,
+      next_departures_durations: bTheo.map(() => bDur),
+      next_departures_trips: bTheo.map((_, i) => `tram-b-j2-trip-${i}`),
     } });
-    card({ journey: [legA, "Zénith", { entity: legB, margin: 4 }], title: "Parc Floral → Gaston Galloux", max_departures: 3 },
+    // À côté, le bus 40 de la gare à Petite Mérie, un trajet sans
+    // correspondance : le tableau mêle les deux par heure de départ, chaque
+    // ligne dit de quel trajet elle est, et la correspondance s'ouvre sur sa
+    // frise.
+    card({ lines: [legA, legB, bus40],
+           trips: [["L'Indien", "Halmagrand"], ["Gare d'Orléans - Quai E", "Petite Mérie"]],
+           title: "My journeys", max_departures: 5 },
          null, null, 500);
+  } else if (page === "boarding") {
+    // Les règles de montée et de descente du fichier de tronçon : un trajet
+    // pris à Victor Hugo et quitté à Royale-Châtelet sur le tram A, dont
+    // deux courses ne prennent personne à Victor Hugo (pickup_type 1, non
+    // listées) et une ne dépose personne à Royale-Châtelet (drop_off_type
+    // 1, listée sans arrivée). En dessous, la même montée quand aucune
+    // course ne prend personne : le tableau le dit.
+    stage.style.gridTemplateColumns = "500px";
+    const stopOf = (f, name) => network[f].stops.find((s) => s.stop_name === name);
+    const ends = (f, a, b) => {
+      const o = stopOf(f, a), d = stopOf(f, b);
+      return { origin_station_stop_id: o.stop_id, origin_station_stop_name: o.stop_name,
+               destination_station_stop_id: d.stop_id, destination_station_stop_name: d.stop_name };
+    };
+    const run = (f, a, b) => (stopOf(f, b).stop_sequence - stopOf(f, a).stop_sequence) * 90;
+    const dur = Math.round(run("tram-a", "L'Indien", "De Gaulle") / 60);
+    const some = sensor("tram-a", { suffix: "bd", leg: true, delays: [0, 62, 0, 130, 0, 0], duration: dur,
+      noBoard: { 0: ["Victor Hugo"], 1: ["Victor Hugo"] }, noAlight: { 2: ["Royale-Châtelet"] },
+      attributes: { friendly_name: "A — L'Indien → De Gaulle", ...ends("tram-a", "L'Indien", "De Gaulle") } });
+    const none = sensor("tram-a", { suffix: "bn", leg: true, delays: [0, 62, 0, 130, 0, 0], duration: dur,
+      noBoard: { 0: ["Victor Hugo"], 1: ["Victor Hugo"], 2: ["Victor Hugo"], 3: ["Victor Hugo"], 4: ["Victor Hugo"], 5: ["Victor Hugo"] },
+      attributes: { friendly_name: "A — L'Indien → De Gaulle", ...ends("tram-a", "L'Indien", "De Gaulle") } });
+    // un trajet pris et quitté en route : la carte coupe le capteur à
+    // Victor Hugo et à Royale-Châtelet, et la course qui ne dépose pas à
+    // Royale-Châtelet est listée sans arrivée
+    card({ lines: [some], trips: [["Victor Hugo", "Royale-Châtelet"]],
+           title: "Boarding at Victor Hugo", max_departures: 6 }, null, null, 500);
+    card({ lines: [none], trips: [["Victor Hugo", "Royale-Châtelet"]],
+           title: "No run boards there", max_departures: 6 }, null, null, 500);
+  } else if (page === "struck") {
+    // Ce que le flux raye, et ce que l'exploitant dit d'une course. gtfs2
+    // retire une course supprimée de ses listes et n'en garde que l'id
+    // (cancelled_trips_realtime, skipped_trips_realtime) : la carte doit
+    // l'avoir vue listée pour la barrer, d'où deux états successifs, comme
+    // sur un vrai tableau. Une alerte qui nomme des courses (trips) porte
+    // sa marque sur leurs lignes et dit leurs heures dans la bande du bas.
+    stage.style.gridTemplateColumns = "420px";
+    const a = sensor("tram-a", { suffix: "st", delays: [0, 62, 0, 130, 0, 0] });
+    const b = sensor("tram-b", { suffix: "st", delays: [45, 0, 0, 0, 190, 0] });
+    const c = sensor("bus-40", { suffix: "st", delays: [0, 0, 95, 0, 0, 0] });
+    const bAt = states[b].attributes;
+    bAt.origin_stop_alert = "Rame courte, affluence attendue";
+    bAt.alert_cause = "OTHER_CAUSE";
+    bAt.origin_stop_alerts = [
+      { text: "Rame courte, affluence attendue", cause: "OTHER_CAUSE", effect: "OTHER_EFFECT",
+        trips: [bAt.next_departures_trips[0]] },
+      { text: "Travaux quai 2 en soirée", cause: "CONSTRUCTION", effect: "DETOUR",
+        trips: [bAt.next_departures_trips[2]], later_only: true },
+    ];
+    const el = card({ lines: [a, b, c], title: "Gare d'Orléans", max_departures: 8 }, null, null, 420);
+    // le flux raye ensuite : la deuxième rame du A est supprimée, la
+    // deuxième du B ne s'arrête pas à la gare (le bus 40 ne part qu'une
+    // heure plus tard : hors des huit lignes)
+    strike(el, [[a, 1, "cancelled"], [b, 1, "skipped"]]);
+    // et sur un trajet, une course dont le flux raye l'arrêt où l'on
+    // descend : le tram A puis le tram B, dont la première rame ne s'arrête
+    // pas à Halmagrand. La frise le dit à la place de l'heure
+    const stopOf = (f, name) => network[f].stops.find((s) => s.stop_name === name);
+    const ends = (f, o, d) => ({
+      origin_station_stop_id: stopOf(f, o).stop_id, origin_station_stop_name: o,
+      destination_station_stop_id: stopOf(f, d).stop_id, destination_station_stop_name: d });
+    const run = (f, o, d) => (stopOf(f, d).stop_sequence - stopOf(f, o).stop_sequence) * 90;
+    const legA = sensor("tram-a", { suffix: "sk", leg: true, delays: [0, 62, 0, 130, 0, 0],
+      duration: Math.round(run("tram-a", "L'Indien", "De Gaulle") / 60),
+      attributes: { friendly_name: "A — L'Indien → De Gaulle", ...ends("tram-a", "L'Indien", "De Gaulle") } });
+    const waits = [300, 480, 240, 600, 360, 420];
+    const bTheo = deps["tram-a"].map((r, i) => r.time + run("tram-a", "L'Indien", "De Gaulle") + waits[i]);
+    const bDur = Math.round(run("tram-b", "De Gaulle", "Halmagrand") / 60);
+    const legB = sensor("tram-b", { suffix: "sk", leg: true, duration: bDur, skipped: { 0: ["Halmagrand"] },
+      attributes: { friendly_name: "B — De Gaulle → Halmagrand", ...ends("tram-b", "De Gaulle", "Halmagrand"),
+        next_departures: bTheo.map(iso), next_departures_realtime: bTheo.map(iso),
+        next_delays_realtime: bTheo.map(() => 0), next_departures_durations: bTheo.map(() => bDur),
+        next_departures_trips: bTheo.map((_, i) => `tram-b-sk-trip-${i}`) } });
+    card({ lines: [legA, legB], trips: [["L'Indien", "Halmagrand"]], title: "L'Indien → Halmagrand",
+           max_departures: 3, show_map: false }, null, null, 420);
+  } else if (page === "destinations") {
+    // L'entête départ puis arrivée, sur un trajet de L'Indien à Halmagrand
+    // que la carte trouve seule de deux façons : le tram A jusqu'à De Gaulle
+    // puis le tram B, ou le tram A jusqu'à la gare puis le bus 40, la gare
+    // regroupant l'arrêt du tram et le quai du bus. Le retour n'a pas de
+    // clé : le bus 40 passe à Halmagrand avant L'Indien, et ce chemin se
+    // range sous son propre départ, Halmagrand. Un trajet de la gare à
+    // Petite Mérie fait le troisième départ. Le tram B porte une alerte. En
+    // dessous, une carte qui ne va qu'à un endroit, sa couleur forcée par
+    // destination_color.
+    stage.style.gridTemplateColumns = "420px";
+    const stopOf = (f, name) => network[f].stops.find((s) => s.stop_name === name);
+    const ends = (f, a, b) => {
+      const o = stopOf(f, a), d = stopOf(f, b);
+      return { origin_station_stop_id: o.stop_id, origin_station_stop_name: o.stop_name,
+               destination_station_stop_id: d.stop_id, destination_station_stop_name: d.stop_name };
+    };
+    const run = (f, a, b) => (stopOf(f, b).stop_sequence - stopOf(f, a).stop_sequence) * 90;
+    const aDur = Math.round(run("tram-a", "L'Indien", "Gare d'Orléans") / 60);
+    const waits = [300, 480, 240, 600, 360, 420];
+    const bTheo = deps["tram-a"].map((r, i) => r.time + run("tram-a", "L'Indien", "De Gaulle") + waits[i]);
+    const bDur = Math.round(run("tram-b", "De Gaulle", "Halmagrand") / 60);
+    const legA = sensor("tram-a", { suffix: "d1", leg: true, delays: [0, 62, 0, 130, 0, 0], duration: aDur,
+      attributes: { friendly_name: "A — L'Indien → Gare d'Orléans", ...ends("tram-a", "L'Indien", "Gare d'Orléans") } });
+    const legB = sensor("tram-b", { suffix: "d2", leg: true, duration: bDur, attributes: {
+      friendly_name: "B — De Gaulle → Halmagrand", ...ends("tram-b", "De Gaulle", "Halmagrand"),
+      next_departures: bTheo.map(iso), next_departures_realtime: bTheo.map(iso),
+      next_delays_realtime: bTheo.map(() => 0), next_departures_durations: bTheo.map(() => bDur),
+      next_departures_trips: bTheo.map((_, i) => `tram-b-d2-trip-${i}`),
+      origin_stop_alert: "Rame courte ce soir, affluence attendue" } });
+    const places = { "Gare d'Orléans": ["Gare d'Orléans", "Gare d'Orléans - Quai E"] };
+    card({ lines: [legA, legB, bus40], places,
+           trips: [["L'Indien", "Halmagrand"], ["Gare d'Orléans", "Petite Mérie"]],
+           max_departures: 5, show_map: false }, null, null, 420);
+    card({ lines: [legA, legB],
+           trips: [{ from: "L'Indien", to: "Halmagrand", destination_color: "#ff6f00" }],
+           max_departures: 3, show_map: false }, null, null, 420);
+  } else if (page === "combos") {
+    // Le bandeau seul, sous toutes les formes de trajet qu'une carte peut
+    // porter, sur les vrais arrêts du réseau : un direct, une
+    // correspondance, plusieurs chemins vers le même lieu, plusieurs lieux,
+    // un aller-retour, une chaîne de trois, et des libellés de ligne larges.
+    // Carte masquée : ce qui est jugé ici, ce sont les plaques de ligne et
+    // la place qu'elles prennent quand le nom, l'heure et le compte à
+    // rebours se disputent déjà la largeur.
+    stage.style.gridTemplateColumns = "420px";
+    const stopOf = (f, name) => network[f].stops.find((s) => s.stop_name === name);
+    const ends = (f, a, b) => {
+      const o = stopOf(f, a), d = stopOf(f, b);
+      return { origin_station_stop_id: o.stop_id, origin_station_stop_name: o.stop_name,
+               destination_station_stop_id: d.stop_id, destination_station_stop_name: d.stop_name };
+    };
+    const run = (f, a, b) => (stopOf(f, b).stop_sequence - stopOf(f, a).stop_sequence) * 90;
+    const aDur = Math.round(run("tram-a", "L'Indien", "Gare d'Orléans") / 60);
+    const bDur = Math.round(run("tram-b", "De Gaulle", "Halmagrand") / 60);
+    const waits = [300, 480, 240, 600, 360, 420];
+    const bTheo = deps["tram-a"].map((r, i) => r.time + run("tram-a", "L'Indien", "De Gaulle") + waits[i]);
+    // un deuxième tronçon posé quelques minutes après l'arrivée du premier,
+    // comme un horaire cadencé : sans quoi la correspondance n'a pas de suite
+    const legA = (sfx, extra) => sensor("tram-a", { suffix: sfx, leg: true, delays: [0, 62, 0, 130, 0, 0],
+      duration: aDur, attributes: { friendly_name: "A — L'Indien → Gare d'Orléans",
+        ...ends("tram-a", "L'Indien", "Gare d'Orléans"), ...(extra || {}) } });
+    const legB = (sfx, extra) => sensor("tram-b", { suffix: sfx, leg: true, duration: bDur, attributes: {
+      friendly_name: "B — De Gaulle → Halmagrand", ...ends("tram-b", "De Gaulle", "Halmagrand"),
+      next_departures: bTheo.map(iso), next_departures_realtime: bTheo.map(iso),
+      next_delays_realtime: bTheo.map(() => 0), next_departures_durations: bTheo.map(() => bDur),
+      next_departures_trips: bTheo.map((_, i) => `tram-b-${sfx}-trip-${i}`), ...(extra || {}) } });
+    const places = { "Gare d'Orléans": ["Gare d'Orléans", "Gare d'Orléans - Quai E"] };
+    const head = (lines, trips, extra) => ({ lines, trips, places, max_departures: 4, show_map: false, ...(extra || {}) });
+
+    // 1 — un lieu, un direct : le bus 40 de Halmagrand à L'Indien
+    card(head([bus40], [["Halmagrand", "L'Indien"]]), "1 · un lieu, un direct", null, 420);
+    // 2 — un lieu, une correspondance : deux plaques, un médaillon à deux modes
+    card(head([legA("c2a"), legB("c2b")], [["L'Indien", "Halmagrand"]]), "2 · un lieu, une correspondance", null, 420);
+    // 3 — le même lieu par deux chemins : A puis B, ou A puis le 40, et la
+    // rangée « Pour y aller » qui départage
+    card(head([legA("c3a"), legB("c3b"), bus40], [["L'Indien", "Halmagrand"]]), "3 · un lieu, deux chemins", null, 420);
+    // 4 — deux lieux, chacun direct : deux chips côte à côte, une plaque chacun
+    card(head([bus40], [["Halmagrand", "L'Indien"], ["Halmagrand", "Gaston Galloux"]]),
+         "4 · deux lieux, deux directs", null, 420);
+    // 5 — deux lieux dissymétriques : un direct d'un côté, une correspondance
+    // de l'autre. Deux plaques contre une, dans deux colonnes de même largeur
+    card(head([legA("c5a"), legB("c5b")], [["L'Indien", "Halmagrand"], ["L'Indien", "Zénith"]]),
+         "5 · deux lieux, l'un avec correspondance", null, 420);
+    // 6 — aller et retour : les trams à l'aller, le 40 au retour
+    card(head([legA("c6a"), legB("c6b"), bus40], [["L'Indien", "Halmagrand"]]), "6 · aller et retour", null, 420);
+    // 7 — trois lieux, dont un seul revient
+    card(head([legA("c7a"), legB("c7b"), bus40], [["L'Indien", "Halmagrand"], ["L'Indien", "Zénith"], ["L'Indien", "Cathédrale"]]),
+         "7 · trois lieux, un seul revient", null, 420);
+    // 8 — trois lignes chaînées : A, B, puis le 40 de Halmagrand à Gaston
+    // Galloux ; trois plaques, et le médaillon qui doit tenir deux modes
+    card(head([legA("c8a"), legB("c8b"), bus40], [["L'Indien", "Gaston Galloux"]]), "8 · trois lignes chaînées", null, 420);
+    // 9 — des libellés larges : « K8 » et « P8 » au lieu de « A » et « B ».
+    // C'est le cas qui dit si les plaques tiennent sur la ligne de l'heure
+    card(head([legA("c9a", { route_route_short_name: "K8" }), legB("c9b", { route_route_short_name: "P8" })],
+              [["L'Indien", "Halmagrand"]]), "9 · libellés larges (K8, P8)", null, 420);
+  } else if (page === "paris") {
+    // Paris — Orléans, hors du réseau TAO : l'Intercités direct de
+    // Paris-Austerlitz à Orléans, le même voyage coupé aux Aubrais avec un
+    // TER pour finir, et un troisième qui pousse jusqu'à l'Hôpital de la
+    // Source en tram. Lignes forgées de bout en bout — un tracé synthétique
+    // par ligne, parce que sans géométrie la carte ne sait pas dater
+    // l'arrivée d'un tronçon et ne chaîne aucune correspondance.
+    stage.style.gridTemplateColumns = "460px";
+    const PLACES = {
+      paris:    { id: "paris-austerlitz", name: "Paris Austerlitz",    lat: 48.8420, lon: 2.3660 },
+      etampes:  { id: "etampes",          name: "Étampes",             lat: 48.4340, lon: 2.1610 },
+      aubrais:  { id: "les-aubrais",      name: "Les Aubrais",         lat: 47.9250, lon: 1.9060 },
+      orleans:  { id: "orleans",          name: "Orléans",             lat: 47.9030, lon: 1.9050 },
+      univ:     { id: "universite",       name: "Université",          lat: 47.8460, lon: 1.9360 },
+      source:   { id: "hopital-source",   name: "Hôpital de la Source", lat: 47.8390, lon: 1.9370 },
+    };
+    // Une ligne synthétique, servie par le même chemin que les lignes TAO :
+    // POS pour que l'interception réponde, network pour que le fichier de
+    // tracé soit fabriqué à la demande. Un point de rencontre partagé par
+    // deux lignes garde le même stop_id des deux côtés — c'est à cela que la
+    // carte reconnaît une correspondance directe plutôt qu'une marche.
+    const line = (key, short, color, type, keys) => {
+      const stops = keys.map((k, i) => ({ ...PLACES[k], stop_id: PLACES[k].id,
+        stop_name: PLACES[k].name, stop_sequence: i + 1 }));
+      network[key] = {
+        short_name: short, color: "#" + color, route_type: type,
+        route_id: "route-" + key, direction_id: 0,
+        terminus: stops[stops.length - 1].stop_name,
+        reference: stops[0], stops,
+        shape: stops.map((s) => [s.lon, s.lat]),
+      };
+      // un véhicule en course, sinon la carte voit une source sans positions
+      // et draine le médaillon comme un flux devenu muet
+      const mid = stops[Math.floor(stops.length / 2)];
+      POS[key] = { type: "FeatureCollection", features: [{ type: "Feature",
+        geometry: { type: "Point", coordinates: [mid.lon, mid.lat] },
+        properties: { vehicle_id: key + "-1", route_id: "route-" + key,
+                      route_short_name: short, trip_id: key + "-trip-0", bearing: 180 } }] };
+      return key;
+    };
+    line("ic-p8",  "P8", "0b5ea8", 2, ["paris", "etampes", "orleans"]);
+    line("ic-k8",  "K8", "b3123c", 2, ["paris", "etampes", "aubrais"]);
+    line("ter-l",  "L",  "6a3d9a", 2, ["aubrais", "orleans"]);
+    line("tram-src", "A", "e4002b", 0, ["orleans", "univ", "source"]);
+    line("ic-p8r", "P8", "0b5ea8", 2, ["orleans", "etampes", "paris"]);
+    line("ic-k8r", "K8", "b3123c", 2, ["aubrais", "etampes", "paris"]);
+    line("ter-lr", "L",  "6a3d9a", 2, ["orleans", "aubrais"]);
+
+    const base = deps["tram-a"].map((r) => r.time);   // six départs, écarts réels
+    // un capteur sur une de ces lignes : ses extrémités, ses heures, sa durée
+    const mkRun = (key, sfx, from, to, opts) => {
+      const n = network[key], a = PLACES[from], b = PLACES[to];
+      return sensor(key, { suffix: sfx, attributes: {
+        friendly_name: `${n.short_name} — ${a.name} → ${b.name}`,
+        origin_station_stop_name: a.name, origin_station_stop_id: a.id,
+        destination_station_stop_name: b.name, destination_station_stop_id: b.id,
+        next_departures: opts.times.map(iso),
+        next_departures_realtime: opts.times.map((t, i) => iso(t + (opts.delays?.[i] ?? 0))),
+        next_delays_realtime: opts.times.map((_, i) => opts.delays?.[i] ?? 0),
+        next_departures_durations: opts.times.map(() => opts.dur),
+        next_departures_trips: opts.times.map((_, i) => `${sfx}-trip-${i}`),
+      } });
+    };
+    // l'état du capteur est son premier départ : ces lignes n'ont pas de
+    // passages dans l'instantané, donc la fabrique l'a posé à « unavailable »
+    // et le pied de carte s'en plaignait
+    const run = (key, sfx, from, to, opts) => {
+      const id = mkRun(key, sfx, from, to, opts);
+      states[id].state = iso(opts.times[0]);
+      return id;
+    };
+    const after = (times, dur, wait) => times.map((t) => t + dur * 60 + wait);
+
+    const p8 = run("ic-p8", "p8", "paris", "orleans",
+      { dur: 65, times: base, delays: [0, 0, 240, 0, 0, 0] });
+    const k8 = run("ic-k8", "k8", "paris", "aubrais",
+      { dur: 58, times: base.map((t) => t + 600), delays: [0, 180, 0, 0, 0, 0] });
+    const terL = run("ter-l", "terl", "aubrais", "orleans",
+      { dur: 7, times: after(base.map((t) => t + 600), 58, 420) });
+    const tramSrc = run("tram-src", "tsrc", "orleans", "source",
+      { dur: 22, times: after(base, 65, 480) });
+    const p8r = run("ic-p8r", "p8r", "orleans", "paris",
+      { dur: 65, times: base.map((t) => t + 300), delays: [0, 0, 0, 120, 0, 0] });
+    const terLr = run("ter-lr", "terlr", "orleans", "aubrais",
+      { dur: 7, times: base.map((t) => t + 900) });
+    const k8r = run("ic-k8r", "k8r", "aubrais", "paris",
+      { dur: 58, times: after(base.map((t) => t + 900), 7, 360) });
+
+    const c = (lines, trips, extra) => ({ lines, trips, show_map: false, ...(extra || {}) });
+    const toOrleans = ["Paris Austerlitz", "Orléans"];
+    // 1 — le direct seul : une plaque, un train, rien à choisir
+    card(c([p8], [toOrleans], { max_departures: 4 }), "1 · Paris → Orléans, direct", null, 460);
+    // 2 — la correspondance seule : deux plaques, le changement aux Aubrais
+    card(c([k8, terL], [toOrleans], { max_departures: 4 }), "2 · Paris → Orléans via Les Aubrais", null, 460);
+    // 3 — le même lieu par deux chemins : trois lignes, et la rangée
+    // « Pour y aller » qui départage le direct du passage par Les Aubrais
+    card(c([p8, k8, terL], [toOrleans], { max_departures: 5 }), "3 · les deux chemins vers Orléans", null, 460);
+    // 4 — deux destinations : Orléans, et l'Hôpital de la Source au bout du
+    // tram. Deux plaques d'un côté, une de l'autre, deux modes mêlés
+    card(c([p8, tramSrc], [toOrleans, ["Paris Austerlitz", "Hôpital de la Source"]], { max_departures: 5 }),
+         "4 · Orléans et l'Hôpital de la Source", null, 460);
+    // 5 — aller et retour, chacun par ses deux chemins : un trajet, et la
+    // carte trouve le retour sur les lignes de l'autre sens
+    card(c([p8, k8, terL, p8r, terLr, k8r], [toOrleans], { max_departures: 5 }),
+         "5 · aller et retour, deux chemins chacun", null, 460);
+    // 6 — tout ensemble : deux destinations, un retour, un titre
+    card(c([p8, k8, terL, p8r, tramSrc], [toOrleans, ["Paris Austerlitz", "Hôpital de la Source"]],
+           { title: "Paris ↔ Orléans", max_departures: 6 }), "6 · la carte complète", null, 460);
   } else if (page === "departures") {
     // Le tableau seul, carte repliée : retards, passages théoriques, jours.
     stage.style.gridTemplateColumns = "420px";
     card({ lines: [tramA, tramB, bus40], title: "Gare d'Orléans", max_departures: 8, show_duration: true },
          null, null, 420);
   } else if (page === "board") {
-    // La vue tableau des départs (departures_view: table) : colonnes départ,
+    // La vue tableau des départs (vue Lignes) : colonnes départ,
     // arrivée, durée, mode, statut, ligne — chaque durée colorée contre le
     // meilleur temps de sa propre ligne, tri fixe sur l'heure de départ.
     // Large exprès : on doit voir les heures groupées à gauche, statut et
     // ligne calés à droite, la colonne mode absorbant seule le surplus.
     stage.style.gridTemplateColumns = "640px";
     card({ lines: [tramA, tramB, bus40], title: "Gare d'Orléans", max_departures: 8,
-           departures_view: "table", show_map: false }, null, null, 640);
+           show_map: false }, null, null, 640);
   } else if (page === "map") {
     // La carte seule, avec les véhicules de l'instantané sur leur tracé.
     stage.style.gridTemplateColumns = "460px";
-    card({ lines: [tramA, tramB], title: "Trams A et B", max_departures: 2, map_aspect: "4/3" },
+    card({ lines: [tramA, tramB], title: "Trams A and B", max_departures: 2, map_aspect: "4/3" },
          null, null, 460);
   } else if (page === "noposition") {
     // Une source sans positions temps réel : le capteur n'annonce aucun
@@ -608,7 +1032,7 @@ try {
       suffix: "sansrt",
       attributes: { vehicle_positions_file: undefined, route_geojson_file: "tram-a_route.json" },
     });
-    card({ entity: tramSansRt, title: "Tram A, horaires seuls", max_departures: 2, map_aspect: "4/3" },
+    card({ entity: tramSansRt, title: "Tram A, schedule only", max_departures: 2, map_aspect: "4/3" },
          null, null, 460);
   } else if (page === "editor") {
     // L'éditeur visuel, tel qu'il apparaît dans le sélecteur de cartes : les
@@ -621,43 +1045,52 @@ try {
     cell.appendChild(ed);
     stage.appendChild(cell);
     ed.setConfig({ lines: [tramA, tramB, bus40], title: "Gare d'Orléans",
-                   max_departures: 6, language: lang });
+                   trips: [["Gare d'Orléans - Quai E", "Halmagrand"]], max_departures: 6 });
     ed.hass = hass;
     openSections(ed);
   } else if (page === "selected") {
-    // Un badge cliqué en en-tête sélectionne sa ligne partout à la fois :
-    // les départs ne gardent que les siens, la carte n'éclaire que son tracé,
-    // et les autres badges s'estompent. Ici, le tram B parmi les trois.
+    // Une ligne choisie par son badge, dans la vue Lignes : les départs ne
+    // gardent que les siens, la carte n'éclaire que son tracé, épingle ses
+    // deux bouts et ne garde que les véhicules des courses du tableau. Ici le
+    // tram A, dont la rame 44 assure le premier départ ; les trams B de
+    // l'instantané roulent tous dans l'autre sens.
     stage.style.gridTemplateColumns = "500px";
     const el = card({ lines: [tramA, tramB, bus40], title: "Gare d'Orléans",
                       max_departures: 5 }, null, null, 500);
-    selectLine(el, 1);
+    selectLine(el, 0);
   } else if (page === "popup") {
     // Le suivi d'un véhicule : on clique sur son marqueur, la carte le suit,
     // et la bulle dit sa ligne, son terminus, son prochain arrêt et sa
     // vitesse. La vitesse se déduit de deux positions successives, donc la
     // page en joue une seconde avant d'ouvrir la bulle.
     stage.style.gridTemplateColumns = "460px";
-    const el = card({ lines: [tramA, tramB], title: "Trams A et B",
+    const el = card({ lines: [tramA, tramB], title: "Trams A and B",
                       max_departures: 2, map_aspect: "4/3" }, null, null, 460);
     openPopup(el);
   } else if (page === "entete12") {
-    // l'entête chargée, à trois tailles : les rangées naissent du contenu
-    // (5 = 4+1, 12 = 3 pleines, 13 = une rangée de plus), jamais de rangée
-    // vide, et la zone de texte occupe le cadre restant, pleine hauteur.
+    // L'entête chargée : une puce par destination, sur une grille régulière,
+    // pour 5, 12 et 13 destinations dont la première choisie, puis 9 sans
+    // choix. Les capteurs reprennent les trois lignes du réseau avec un autre
+    // terminus chacun, ce qui en fait autant de destinations distinctes : la
+    // même ligne vers le même terminus ne ferait qu'une puce.
     stage.style.gridTemplateColumns = "560px";
-    const pool = [tramA, tramB, bus40,
-      ...Array.from({ length: 10 }, (_, i) =>
-        sensor(["bus-40", "tram-a", "tram-b"][i % 3], { suffix: "e" + i }))];
+    const files = ["bus-40", "tram-a", "tram-b"];
+    const used = new Set();
+    const pool = Array.from({ length: 13 }, (_, i) => {
+      const f = files[i % 3];
+      const stops = network[f].stops;
+      let k = (i * 7 + 3) % stops.length;
+      while (used.has(stops[k].stop_name)) k = (k + 1) % stops.length;
+      used.add(stops[k].stop_name);
+      return sensor(f, { suffix: "e" + i, attributes: { destination_station_stop_name: stops[k].stop_name } });
+    });
     for (const n of [5, 12, 13]) {
       const el = card({ lines: pool.slice(0, n), max_departures: 2 },
-        `${n} cartouches`, null, 560);
+        `${n} destinations`, null, 560);
       selectLine(el, 0);
     }
-    // sans sélection ni titre il n'y a pas de zone de texte : le plafond de
-    // quatre colonnes tombe et les cartouches reprennent toute la largeur
     card({ lines: pool.slice(0, 9), max_departures: 2 },
-      "9 cartouches, rien de sélectionné : toute la largeur", null, 560);
+      "9 destinations, none picked", null, 560);
   } else if (page === "narrow") {
     // Une colonne étroite, comme un panneau latéral ou un téléphone. Chrome
     // headless refuse une fenêtre de moins de 500 px environ, donc l'étroitesse
@@ -695,8 +1128,8 @@ const ready = () => {
     // la page ne vaut que si les états qu'elle illustre sont bien là : la
     // pastille muette attend l'échec du fetch de son fichier de positions
     const has = (sel) => cards.some((c) => c.shadowRoot?.querySelector(sel));
-    return cards.every((c) => c.shadowRoot?.querySelector(".badge"))
-      && has(".badge-pip.mute") && has(".badge-pip.alert") && has(".badge-pip.svc");
+    return cards.every((c) => c.shadowRoot?.querySelector(".dest"))
+      && has(".dmark.mute") && has(".dmark.alert") && has(".dmark.rest");
   }
   return cards.every((c) => {
     const root = c.shadowRoot;
@@ -707,6 +1140,10 @@ const ready = () => {
     const wrap = root.querySelector(".map-wrap");
     if (wrap && wrap.dataset.basemap !== "idle") return false;
     if (page === "departures" || page === "board") return true;
+    // l'entête par destination n'est prête qu'avec ses puces
+    if (page === "destinations") return !!root.querySelector(".dest");
+    // la page n'est prête que les courses rayées : deux, une par sorte
+    if (page === "struck") return root.querySelectorAll(".chip-struck").length >= 2 || !!root.querySelector(".jbroken");
     if (!root.querySelector("svg")) return false;
     // la page popup n'est prête que la bulle ouverte
     if (page === "popup") {
@@ -729,10 +1166,13 @@ const poll = setInterval(() => {
   if (stable >= 3 || waited > 30000) {
     clearInterval(poll);
     const r = stage.getBoundingClientRect();
+    // passé le délai sans que la page ait ce qu'elle doit montrer, elle le
+    // dit : shots.py refuse alors de photographier une page à moitié faite
+    const late = stable < 3 && !ready();
     // Seule la hauteur est mesurée. La largeur reste celle que shots.py a
     // donnée : une page fluide s'étire à la fenêtre, et lui rendre sa propre
     // largeur ferait tourner la mesure en rond.
-    document.title = `ready ${innerWidth}x${Math.ceil(r.bottom + 20)} — `
+    document.title = `${late ? "late" : "ready"} ${innerWidth}x${Math.ceil(r.bottom + 20)} — `
       + document.title;
   }
 }, 100);
