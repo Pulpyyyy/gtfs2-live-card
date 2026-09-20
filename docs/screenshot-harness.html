@@ -772,6 +772,10 @@ try {
         trips: [bAt.next_departures_trips[0]] },
       { text: "Travaux quai 2 en soirée", cause: "CONSTRUCTION", effect: "DETOUR",
         trips: [bAt.next_departures_trips[2]], later_only: true },
+      // un titre qui ne dit pas où : la carte le préfixe des arrêts que
+      // gtfs2 dit visés (stops), sauf s'il les nomme déjà
+      { text: "Travaux", cause: "CONSTRUCTION", effect: "NO_SERVICE", stops: ["Halmagrand"] },
+      { text: "Halmagrand : accès nord fermé", cause: "CONSTRUCTION", stops: ["Halmagrand"] },
     ];
     const el = card({ lines: [a, b, c], title: "Gare d'Orléans", max_departures: 8 }, null, null, 420);
     // le flux raye ensuite : la deuxième rame du A est supprimée, la
@@ -797,6 +801,13 @@ try {
         next_departures: bTheo.map(iso), next_departures_realtime: bTheo.map(iso),
         next_delays_realtime: bTheo.map(() => 0), next_departures_durations: bTheo.map(() => bDur),
         next_departures_trips: bTheo.map((_, i) => `tram-b-sk-trip-${i}`) } });
+    // et ce que l'exploitant dit d'une STATION du trajet : la frise, la
+    // colonne Via et la carte marquent l'arrêt nommé par l'alerte (stops),
+    // la phrase en infobulle
+    states[legB].attributes.origin_stop_alerts = [
+      { text: "Travaux de rénovation - Arrêt non desservi", cause: "CONSTRUCTION",
+        effect: "NO_SERVICE", stops: ["Halmagrand"] },
+    ];
     card({ lines: [legA, legB], trips: [["L'Indien", "Halmagrand"]], title: "L'Indien → Halmagrand",
            max_departures: 3, show_map: false }, null, null, 420);
   } else if (page === "destinations") {

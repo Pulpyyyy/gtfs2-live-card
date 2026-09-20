@@ -1777,10 +1777,110 @@ class Gtfs2LiveCard extends HTMLElement {
             : this._t("resting_days", { n: nIn });
     }
 
+    // An alert's sentence as the card prints it: the stops gtfs2 says it is
+    // addressed to (stops, their stations' names) first, unless the
+    // sentence names them already. IDFM closes a station under the header
+    // "Travaux" and says which one only there, and the rider cannot tell
+    // whether it is a stop they use or one their train only passes.
+    _alertSay(it) {
+        const raw = String(it?.text ?? "").trim();
+        const text = raw === "None" || raw === "no info" ? "" : raw;
+        const low = text.toLowerCase();
+        const stops = (Array.isArray(it?.stops) ? it.stops : [])
+            .map((x) => String(x).trim()).filter((x) => x && !low.includes(x.toLowerCase()));
+        if (!stops.length) return text;
+        return text ? this._t("line_prefix", { l: stops.join(", ") }) + text : stops.join(", ");
+    }
+
+    // The stops gtfs2 names on its alerts, by the line that publishes them:
+    // {line idx -> {stop name -> [items]}}. An alert with no stops is the
+    // line's own and is already said under the board; one with stops is
+    // about a place, and a place is somewhere the card can point at.
+    _stopAlerts() {
+        if (this._saAt === this._hass) return this._saMap;
+        const byLine = new Map();
+        for (const src of this._depSources()) {
+            if (!src.def) continue;
+            const at = src.st?.attributes || {};
+            for (const k of ["origin_stop_alerts", "destination_stop_alerts"]) {
+                for (const it of Array.isArray(at[k]) ? at[k] : []) {
+                    for (const nm of Array.isArray(it?.stops) ? it.stops : []) {
+                        const key = String(nm).trim().toLowerCase();
+                        if (!key) continue;
+                        if (!byLine.has(src.def.idx)) byLine.set(src.def.idx, new Map());
+                        const m = byLine.get(src.def.idx);
+                        if (!m.has(key)) m.set(key, []);
+                        // the same alert is published on both ends of a
+                        // sensor, as two objects of the same words: told
+                        // apart by identity, it was kept twice and every
+                        // tooltip and mark said it twice over
+                        const said = (x) => `${x?.cause}|${x?.effect}|${String(x?.text ?? "").trim()}`;
+                        if (!m.get(key).some((x) => said(x) === said(it))) m.get(key).push(it);
+                    }
+                }
+            }
+        }
+        this._saAt = this._hass;
+        this._saMap = byLine;
+        return byLine;
+    }
+
+    // What is said of this stop of this line, if anything. The name gtfs2
+    // puts on an alert is the station's, the one on a shape is the platform's:
+    // where they are not the same word, one holding the other is close enough
+    // ("Saint-Michel Notre-Dame" against "Saint-Michel").
+    _stopAlertsAt(li, name) {
+        const byLine = this._stopAlerts();
+        if (!byLine.size || li == null) return null;
+        const m = byLine.get(Number(li));
+        if (!m) return null;
+        const nm = String(name ?? "").trim().toLowerCase();
+        if (!nm) return null;
+        const hit = m.get(nm);
+        if (hit) return hit;
+        if (nm.length < 4) return null;
+        for (const [other, v] of m) {
+            if (other.length >= 4 && (other.includes(nm) || nm.includes(other))) return v;
+        }
+        return null;
+    }
+
+    // a list of alerts as the mark the card prints beside a time or a name:
+    // the glyph of the worst kind, the sentences in the tooltip
+    _alertMarkHtml(items) {
+        if (!items?.length) return "";
+        const kind = alertKind(items[0].cause, items[0].effect);
+        const say = items.map((x) => this._alertSay(x)).filter(Boolean).join(" · ")
+            || this._t("alert_" + kind);
+        return `<span class="row-alert" role="img" title="${esc(say)}" data-tip="${esc(say)}" aria-label="${esc(say)}">`
+            + `<svg viewBox="${-PIP / 2} ${-PIP / 2} ${PIP} ${PIP}" aria-hidden="true">${modeGlyph(kind, PIP_INK, "currentColor")}</svg></span>`;
+    }
+
+    // the same mark on the map: a small disc over the stop's own, up and to
+    // the right of it, where it covers neither the dot nor its label
+    // base is the radius of the marker the mark sits on, in the same units
+    // the marker is drawn with: a stop's dot (4), a station's disc (10).
+    // The mark is read before the marker under it - it is why the eye was
+    // sent there - so it is drawn a station's size whatever it sits on, and
+    // follows the marker where that is bigger still. Half of a station, it
+    // was lost on one and hard to see on a stop at any zoom.
+    _alertPipSvg(items, x, y, u, base = 10) {
+        if (!items?.length) return "";
+        const kind = alertKind(items[0].cause, items[0].effect);
+        const r = Math.max(9.5, base) * u;
+        return `<g pointer-events="none" transform="translate(${(x + r).toFixed(1)} ${(y - r).toFixed(1)})">`
+            + `<circle r="${r.toFixed(2)}" fill="var(--gtfs2-late-color, #e65100)" stroke="var(--card-background-color, #fff)" stroke-width="${(1.4 * u).toFixed(2)}"></circle>`
+            + modeGlyph(kind, r * (PIP_INK / (PIP / 2)), "var(--card-background-color, #fff)") + `</g>`;
+    }
+
     _alertOf(d) {
         const at = d.entity ? this._hass?.states?.[d.entity]?.attributes : null;
         if (!at) return null;
-        const text = ["origin_stop_alert", "destination_stop_alert"]
+        // the head of the stack is the sentence of the string, with the
+        // stops it names; the string alone on a gtfs2 without the stack
+        const head = ["origin_stop_alerts", "destination_stop_alerts"]
+            .map((k) => (Array.isArray(at[k]) ? at[k][0] : null)).find(Boolean);
+        const text = head ? this._alertSay(head) : ["origin_stop_alert", "destination_stop_alert"]
             .map((k) => attrVal(at, k))
             .find((v) => v && v !== "no info") || "";
         const cause = attrVal(at, "alert_cause") || "";
@@ -2348,7 +2448,7 @@ class Gtfs2LiveCard extends HTMLElement {
         }
         for (const j of runs) for (const ride of j.rides) {
             if (!ents.has(ride.leg.def.entity)) continue;
-            for (const it of ride.row?.alerts || []) take(alertKind(it.cause, it.effect), it.text);
+            for (const it of ride.row?.alerts || []) take(alertKind(it.cause, it.effect), this._alertSay(it));
         }
         return out;
     }
@@ -2785,12 +2885,7 @@ class Gtfs2LiveCard extends HTMLElement {
     // of its kind beside the time, the badge's own glyph, the sentence in
     // the tooltip - printed under the mark on a tap, a finger cannot hover
     _rowAlertHtml(r) {
-        if (!r?.alerts?.length) return "";
-        const kind = alertKind(r.alerts[0].cause, r.alerts[0].effect);
-        const say = r.alerts.map((x) => String(x?.text ?? "").trim()).filter((t) => t && t !== "None").join(" · ")
-            || this._t("alert_" + kind);
-        return `<span class="row-alert" role="img" title="${esc(say)}" data-tip="${esc(say)}" aria-label="${esc(say)}">`
-            + `<svg viewBox="${-PIP / 2} ${-PIP / 2} ${PIP} ${PIP}" aria-hidden="true">${modeGlyph(kind, PIP_INK, "currentColor")}</svg></span>`;
+        return this._alertMarkHtml(r?.alerts);
     }
 
     /* ── JOURNEY: legs chained on the board, slices numbered on the map ── */
@@ -2942,7 +3037,8 @@ class Gtfs2LiveCard extends HTMLElement {
         return { ji, name: jr.name, legs, points, missing };
     }
 
-    // The journeys shown, with their indexes. All of them with no line picked.
+    // The journeys shown, with their indexes. All of them among the trips,
+    // none on the board of lines while no line is picked.
     // A line picked from its badge shows as one journey of its own, under
     // an index below zero: the line read as a line, between its sensor's
     // two ends, with every stop the trips get on it or off it on the way
@@ -2958,7 +3054,10 @@ class Gtfs2LiveCard extends HTMLElement {
         // the arrival and the way picked
         const v = this._destView();
         if (v) all = all.filter(({ ji }) => this._destKeeps(v, ji));
-        if (li == null) return all;
+        // the board of lines with no badge picked is about every line alike:
+        // no journey numbered, framed or filtering the vehicles, since the
+        // header shows nothing that picked one
+        if (li == null) return this._modeOf() === "trips" ? all : [];
         const def = this._lineDefs().find((d) => d.idx === li);
         if (!def?.entity) return [];
         return [{ jr: { name: null, legs: [{ entity: def.entity, via: this._lineViaNames(def), getOn: null, getOff: null, over: {} }] }, ji: -1 - li }];
@@ -3028,13 +3127,17 @@ class Gtfs2LiveCard extends HTMLElement {
     _rowVias(r, vias) {
         if (!r.def || r.struck) return [];
         const list = vias.get(r.def.idx) || [];
-        return list.map(({ p, leg }) => ({ name: p.name || "", when: this._rideTime(p, { leg, row: r }) }));
+        return list.map(({ p, leg }) => ({ name: p.name || "", when: this._rideTime(p, { leg, row: r }), li: leg.def.idx }));
     }
 
     // one departure's stops on the way, as the board prints them: the
-    // name, then the clock, or why the run does not call there
+    // name, then the clock, or why the run does not call there. A stop the
+    // operator says something about wears the mark of what is said, so a
+    // closed station is read where the rider reads their stops, not only in
+    // the strip of alerts under the board.
     _viasHtml(list) {
-        return list.map((v) => `<span class="via-t">${esc(v.name)} ${this._clockHtml(v.when) || "—"}</span>`).join(" · ");
+        return list.map((v) => `<span class="via-t">${this._alertMarkHtml(this._stopAlertsAt(v.li, v.name))}`
+            + `${esc(v.name)} ${this._clockHtml(v.when) || "—"}</span>`).join(" · ");
     }
 
     // the plans of the journeys shown (see _visibleJourneys)
@@ -3705,8 +3808,8 @@ class Gtfs2LiveCard extends HTMLElement {
             const at = src.st.attributes || {};
             const stack = Array.isArray(at.origin_stop_alerts) ? at.origin_stop_alerts : [{ text: at.origin_stop_alert }];
             for (const it of stack) {
-                const text = String(it?.text ?? "").trim();
-                if (!text || text === "None" || text === "no info") continue;
+                const text = this._alertSay(it);
+                if (!text) continue;
                 const label = prefix + text;
                 if (seenAlerts.has(label)) continue;
                 seenAlerts.add(label);
@@ -3803,12 +3906,13 @@ class Gtfs2LiveCard extends HTMLElement {
                     for (const p of plan.points) {
                         if (p.leg === leg) pts.push({ n: esc(this._ptLabel(p)), name: p.name || "", clock: clockOf(this._rideTime(p, ride)) });
                     }
+                    const li = leg.def.idx;
                     const color = esc(leg.def.color);
                     pts.forEach((q, i) => {
                         const cls = (i === 0 ? " first" : "") + (i === pts.length - 1 ? " last" : "");
                         body += `<span class="jl">${i === 0 ? badgeOf(leg) : ""}</span>`
                             + `<span class="jnode${cls}" style="--lc:${color}"><span class="jnum">${q.n}</span></span>`
-                            + `<span class="jname">${esc(q.name)}</span><span class="jclock">${q.clock}</span>`;
+                            + `<span class="jname">${this._alertMarkHtml(this._stopAlertsAt(li, q.name))}${esc(q.name)}</span><span class="jclock">${q.clock}</span>`;
                     });
                     if (leg.end.kind !== "transfer") break;
                     const next = plan.legs[leg.idx + 1];
@@ -3940,7 +4044,7 @@ class Gtfs2LiveCard extends HTMLElement {
             + `<div class="board-wrap"><table class="board"><thead><tr>`
             + (multi ? `<th class="fit">${this._t("col_line")}</th>` : "")
             + `<th class="num fit">${this._t("col_departure")}</th><th class="fit"></th>`
-            + (showVia ? `<th class="fit">${this._t("col_via")}</th>` : "") + `<th class="num fit">${this._t("col_arrival")}</th>`
+            + (showVia ? `<th class="fit vias">${this._t("col_via")}</th>` : "") + `<th class="num fit">${this._t("col_arrival")}</th>`
             + `<th class="num fit">${this._t("col_duration")}</th><th>${showDest ? this._t("col_destination") : ""}</th>`
             + `</tr></thead><tbody>${cells}</tbody></table></div>`;
     }
@@ -4940,6 +5044,23 @@ class Gtfs2LiveCard extends HTMLElement {
         // the journey, drawn in the neutral view only: a line picked from its
         // badge or a tracked vehicle shows that line whole, as it always did
         const jGeo = !focusEntry && (topLi == null || this._journeys?.length) ? this._journeyGeometry(bent) : null;
+        // A line picked from its badge is picked whole. The journeys riding
+        // it keep their discs and their numbers, but a journey rides a
+        // stretch of the line, and fitting the view to that stretch alone
+        // left the rest of the line off screen - a line picked to be looked
+        // at, shown in part. So the ground the view must cover is the line's
+        // own, end to end, whatever the journeys on it ask for.
+        const pickedFit = [];
+        if (!focusEntry && this._hiLine != null) {
+            for (const src of this._depSources()) {
+                if (!src.def || src.def.idx !== this._hiLine) continue;
+                const s = this._legSlice(src.def, src.st);
+                const stops = s.route?.stops;
+                if (!stops || s.oi == null || s.di == null || s.di <= s.oi) continue;
+                pickedFit.push(...this._subRoute(bent.get(this._hiLine) || s.route,
+                    stops[s.oi].cum, stops[s.di].cum).line);
+            }
+        }
         // a journey's own ends carry the words of departure and arrival: no
         // station marker saying them a second time
         if (jGeo) stations = [];
@@ -4990,7 +5111,7 @@ class Gtfs2LiveCard extends HTMLElement {
                 // numbered points and the walks between them. Vehicles at the
                 // far end of a line are still drawn, off screen until the
                 // user pans there, rather than stretching the view to them
-                pts = [...jGeo.fit, ...stations];
+                pts = [...jGeo.fit, ...stations, ...pickedFit];
             } else {
                 pts = all.map((e) => e.w);
                 pts.push(...stations);
@@ -5260,7 +5381,8 @@ class Gtfs2LiveCard extends HTMLElement {
                 const c = rel(p.pos);
                 stationSvg += `<g class="stop jpt" data-action="stop" data-li="${p.li}" data-name="${esc(p.name)}" data-x="${c.x.toFixed(1)}" data-y="${c.y.toFixed(1)}">
                     <circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${14 * u}" fill="${esc(sc)}" opacity="0.2"></circle>
-                    <circle class="dot" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${10 * u}" fill="${esc(sc)}" stroke="var(--card-background-color, #fff)" stroke-width="${2.5 * u}"></circle></g>`;
+                    <circle class="dot" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${10 * u}" fill="${esc(sc)}" stroke="var(--card-background-color, #fff)" stroke-width="${2.5 * u}"></circle>
+                    ${this._alertPipSvg(this._stopAlertsAt(p.li, p.name), c.x + 4 * u, c.y - 4 * u, u, 10)}</g>`;
             }
             // points closer than a disc are one mark - a start next to the
             // first stop, a change seen from afar - or the second hides the
@@ -5281,9 +5403,11 @@ class Gtfs2LiveCard extends HTMLElement {
                         + `<rect class="dot" x="${(c.x - w / 2).toFixed(1)}" y="${(c.y - 10 * u).toFixed(1)}" width="${w.toFixed(1)}" height="${(20 * u).toFixed(1)}" rx="${(10 * u).toFixed(1)}" fill="${esc(sc)}" stroke="var(--card-background-color, #fff)" stroke-width="${2.5 * u}"></rect>`
                     : `<circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${14 * u}" fill="${esc(sc)}" opacity="0.2"></circle>`
                         + `<circle class="dot" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${10 * u}" fill="${esc(sc)}" stroke="var(--card-background-color, #fff)" stroke-width="${2.5 * u}"></circle>`;
+                const pal = pts.map((q) => this._stopAlertsAt(q.li, q.name)).find(Boolean);
                 stationSvg += `<g class="stop jpt" data-action="stop" data-li="${p.li}" data-name="${esc(name)}" data-x="${c.x.toFixed(1)}" data-y="${c.y.toFixed(1)}">
                     ${halo}
-                    ${svgText(c.x, c.y + 3.8 * u, 11, u, `font-weight="700" fill="${ink}" text-anchor="middle" pointer-events="none"`, esc(text))}</g>`;
+                    ${svgText(c.x, c.y + 3.8 * u, 11, u, `font-weight="700" fill="${ink}" text-anchor="middle" pointer-events="none"`, esc(text))}
+                    ${this._alertPipSvg(pal, c.x + (pts.length > 1 ? w / 2 - 2 * u : 4 * u), c.y - 4 * u, u, 10)}</g>`;
             }
         }
         // ── the ends' words, ringed in the station colour, above the markers
@@ -5574,7 +5698,7 @@ class Gtfs2LiveCard extends HTMLElement {
             : `<circle class="dot" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${r.toFixed(2)}" fill="var(--card-background-color, #fff)" stroke="${stroke}" stroke-width="${sw}"></circle>`;
         return `<g class="stop" data-action="stop" data-li="${li}" data-name="${esc(s.name)}" data-x="${p.x.toFixed(1)}" data-y="${p.y.toFixed(1)}">`
             + `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${11 * u}" fill="transparent"></circle>`
-            + dot + `</g>`;
+            + dot + this._alertPipSvg(this._stopAlertsAt(li, s.name), p.x, p.y, u, hub ? baseR + 1.6 : baseR) + `</g>`;
     }
 
     // automatic stop labels (zoomed-in views): right of the dot, skipped on
@@ -5622,6 +5746,9 @@ class Gtfs2LiveCard extends HTMLElement {
     _labelIsRedundant(ds) {
         if (!ds.name) return true;
         const key = String(ds.name).trim().toLowerCase();
+        // the mark says there is something to read here, and the tooltip is
+        // where it is written: never mute it
+        if (this._stopAlertsAt(Number(ds.li), ds.name)) return false;
         if (!this._shownLabels.has(key)) return false;    // name not drawn, or truncated
         const own = this._lineDefs()[Number(ds.li)];
         const ownLabel = own ? this._lineLabelOf(own) : null;
@@ -5658,15 +5785,39 @@ class Gtfs2LiveCard extends HTMLElement {
             });
         }
         const never = [stop?.noBoard && !off ? this._t("tip_no_board") : "", stop?.noAlight && !on ? this._t("tip_no_alight") : ""].filter(Boolean);
+        // what the operator says of this stop, under the name and the rest:
+        // the sentence itself, wrapped, since it is the reason the mark is
+        // there and a tooltip that only repeated the name would say nothing
+        const said = this._stopAlertsAt(Number(ds.li), ds.name);
+        const sayAl = said ? said.map((x) => this._alertSay(x)).filter(Boolean).join(" · ") : "";
         tip.innerHTML = `<b>${esc(ds.name)}</b>`
             + (others.length ? `<span class="tip-links">${others.map(([l, c]) => `<span class="mini-badge" style="background:${esc(c)};color:${inkOn(c)}">${esc(l)}</span>`).join("")}</span>` : "")
-            + (never.length ? `<span class="tip-note">${never.map(esc).join(", ")}</span>` : "");
+            + (never.length ? `<span class="tip-note">${never.map(esc).join(", ")}</span>` : "")
+            + (sayAl ? `<span class="tip-alert">${esc(sayAl)}</span>` : "");
+        tip.classList.toggle("tip-wrap", !!sayAl);
         const vb = this._viewBox, w = svg.clientWidth || 408, h = svg.clientHeight || 204;
         const sx = ((Number(ds.x) - vb[0]) / vb[2]) * w, sy = ((Number(ds.y) - vb[1]) / vb[3]) * h;
         tip.hidden = false;
-        const mx = Math.max(8, Math.min(70, (w - 16) / 2));
-        tip.style.left = `${Math.max(mx, Math.min(w - mx, sx))}px`;
-        tip.style.top = `${Math.max(8, Math.min(h - 4, sy - 10))}px`;
+        // Placed from its own size: an alert's sentence makes it tall, and a
+        // tall tip over a stop near the top drew itself clean out of the
+        // map, over the board above. It goes under the stop instead, and its
+        // sides are held by its width, not by a margin guessed at.
+        // Twice, because the first size a tip just opened gives is the one
+        // it had before its words were wrapped: a line short, and the tip
+        // placed as if it fitted. The second pass reads the size it has and
+        // costs nothing once it stops changing.
+        const place = () => {
+            const tw = tip.offsetWidth, th = tip.offsetHeight;
+            const below = sy - 10 - th < 4;
+            tip.classList.toggle("below", below);
+            const half = Math.min(tw / 2 + 4, w / 2);
+            tip.style.left = `${Math.max(half, Math.min(w - half, sx))}px`;
+            tip.style.top = below
+                ? `${Math.max(4, Math.min(sy + 14, h - th - 4))}px`
+                : `${Math.max(th + 4, Math.min(h - 4, sy - 10))}px`;
+            return th;
+        };
+        if (place() !== tip.offsetHeight) place();
         if (this._tipT) clearTimeout(this._tipT);
         this._tipT = ms ? setTimeout(() => this._hideTip(), ms) : null;
     }
@@ -5745,10 +5896,22 @@ class Gtfs2LiveCard extends HTMLElement {
         // opened; pointerover will not fire again inside the stop it never
         // left, so the visit is read from the move itself
         svg.addEventListener("pointermove", (e) => {
-            if (e.pointerType !== "mouse" || this._pointers.size || !this._panHover) return;
+            if (e.pointerType !== "mouse") return;
+            // the tip is placed from the view it was opened in and does not
+            // travel: a map moving under it leaves it pointing at nothing
+            if (this._pointers.size) { this._hideTip(); return; }
+            // every render replaces the overlay, the stop under the cursor
+            // with it: the node that would have fired pointerout is gone,
+            // and the tip it opened would sit there for good. The move says
+            // where the cursor really is, which is the only word left
+            if (!e.composedPath().some((n) => n.classList && n.classList.contains("stop"))) this._hideTip();
+            if (!this._panHover) return;
             this._panHover = false;
             this._stopHover(e, true);
         });
+        // and a cursor that leaves the map without passing over a stop on
+        // its way out never says so either
+        svg.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse") this._hideTip(); });
     }
 
     _showHint(text, teachKind) {
@@ -6313,8 +6476,16 @@ class Gtfs2LiveCard extends HTMLElement {
             .board th:first-child, .board td:first-child { padding-left: 12px; }
             .board th:last-child, .board td:last-child { padding-right: 12px; }
             /* no sideways scrolling on a phone: the words give way - the
-               destination and the stops on the way wrap, the times never */
-            .board:not(.jboard) td:last-child, .board:not(.jboard) td.vias { white-space: normal; overflow-wrap: anywhere; }
+               destination and the stops on the way wrap, the times never.
+               They wrap on their spaces, and a word too long for the column
+               breaks inside itself; overflow-wrap: anywhere broke every word
+               letter by letter, and - a letter being all the column then had
+               to be - squeezed the stops on the way into a ribbon one
+               character wide. Those stops are the only prose of the board,
+               so narrow they stop hugging their content and take the room
+               the times leave instead. */
+            .board:not(.jboard) td:last-child { white-space: normal; overflow-wrap: break-word; }
+            .board:not(.jboard) th.vias, .board:not(.jboard) td.vias { width: auto; white-space: normal; overflow-wrap: break-word; }
             .board:not(.jboard) td.vias .via-t { white-space: normal; }
             .board:not(.jboard) td.dly-c { padding-right: 4px; }
         }
@@ -6347,6 +6518,22 @@ class Gtfs2LiveCard extends HTMLElement {
         .map-tip { position: absolute; transform: translate(-50%, -100%); pointer-events: none; display: flex; align-items: center; gap: 6px; background: var(--card-background-color, #fff); color: var(--primary-text-color); font-size: 11px; padding: 3px 8px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.3); white-space: nowrap; }
         .tip-links { display: inline-flex; gap: 3px; }
         .tip-note { color: var(--secondary-text-color); }
+        /* the alert's own sentence: a full sentence, so the tooltip stops
+           being one line and wraps like a note */
+        .tip-alert { color: var(--gtfs2-late-color, #e65100); color: color-mix(in srgb, var(--gtfs2-late-color, #e65100) 75%, var(--primary-text-color, #212121)); white-space: normal; max-width: 16em; }
+        /* a class, not :has(.tip-alert): the tip measures itself the moment
+           it opens, to know whether it fits over the stop, and Chrome had
+           not applied the :has() rule by then - it read the height of a tip
+           as wide as its words, then drew the wrapped one, taller, over the
+           board above */
+        .map-tip.tip-wrap { white-space: normal; max-width: 19em; align-items: flex-start; }
+        /* under the stop when there is no room over it */
+        .map-tip.below { transform: translate(-50%, 0); }
+        /* the class sets display, which beats the browser's own rule for
+           [hidden]: without this the tip never closed, since closing it is
+           setting that attribute. It also gives the height read at the next
+           opening a layout of its own, instead of the one left behind */
+        .map-tip[hidden] { display: none; }
         .map-btn { position: absolute; top: 8px; left: 8px; border: none; border-radius: 12px; min-height: 36px; padding: 7px 12px; font-size: 12px; font-weight: 500; font-family: inherit; background: var(--card-background-color, #fff); color: var(--primary-text-color); cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
         .map-ctrl { position: absolute; top: 8px; right: 8px; display: flex; flex-direction: column; gap: 6px; }
         .map-ctrl-btn { width: 36px; height: 36px; border: none; border-radius: 9px; background: var(--card-background-color, #fff); color: var(--primary-text-color); font-size: 18px; font-weight: 600; font-family: inherit; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.2); display: flex; align-items: center; justify-content: center; padding: 0; }
