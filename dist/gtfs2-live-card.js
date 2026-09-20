@@ -394,16 +394,16 @@ const bezier = (x1, y1, x2, y2) => {
 const EASE_OUT = bezier(0, 0, 0.58, 1);   // CSS "ease-out"
 // The base map is MapLibre GL, loaded once per page from a CDN, drawing the
 // VersaTiles styles on their public vector tiles (Shortbread schema,
-// OpenStreetMap data, CORS open, no key): graybeard in the light theme,
-// shadow in the dark one. The card keeps its own camera (the SVG viewBox)
+// OpenStreetMap data, CORS open, no key): gray in the light theme,
+// gray-dark in the dark one. The card keeps its own camera (the SVG viewBox)
 // and MapLibre follows it, so the overlay's geometry, gestures and
 // animations are untouched: the canvas only replaced the raster tiles.
 const MAPLIBRE_VERSION = "6.9.0";
 const MAPLIBRE_JS = `https://cdn.jsdelivr.net/npm/maplibre-gl@${MAPLIBRE_VERSION}/dist/maplibre-gl.mjs`;
 const MAPLIBRE_CSS = `https://cdn.jsdelivr.net/npm/maplibre-gl@${MAPLIBRE_VERSION}/dist/maplibre-gl.css`;
 const MAP_STYLES = {
-    light: "https://tiles.versatiles.org/assets/styles/graybeard/style.json",
-    dark: "https://tiles.versatiles.org/assets/styles/shadow/style.json",
+    light: "https://tiles.versatiles.org/assets/styles/gray/style.json",
+    dark: "https://tiles.versatiles.org/assets/styles/gray-dark/style.json",
 };
 const MAP_CREDIT = "© OpenStreetMap contributors";
 // source layers left out of the styles: building footprints load the picture
