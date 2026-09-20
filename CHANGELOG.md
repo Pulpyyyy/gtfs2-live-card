@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.1.0
+
+### Added
+
+- What an operator says of a stop is read where that stop is: a mark beside it on the journey timeline and in the board's Via column, a disc over it on the map, and the sentence itself in the map's tooltip. An alert whose words do not name the place is prefixed with the stops it lists, and an alert published on both ends of a sensor is said once.
+
+### Fixed
+
+- The base map is back. VersaTiles renamed the two styles the card draws: `graybeard` is `gray`, `shadow` is `gray-dark`. The old names still answer, with a redirect; the card asks for the names as they stand.
+- A line picked from its badge is drawn whole, between its sensor's two ends, with every stop the card's trips get on it or off it. It was drawn only as far as the first change of the first way found riding it.
+- The map's stop tooltip closes. It never has: `.map-tip` sets a display of its own, which beats the browser's rule for `[hidden]`, and closing the tooltip is setting that attribute. It closes now, and on the three occasions it also missed: the map dragged under it, the cursor leaving the map, and a refresh replacing the stop the cursor was over. Where it does not fit over the stop it goes under it, instead of drawing itself onto the board above.
+- The mark of an alert on the map follows the marker it sits on, and is never smaller than a station's disc.
+
 ## 2.0.0
 
 ### Breaking
