@@ -2943,12 +2943,12 @@ class Gtfs2LiveCard extends HTMLElement {
     }
 
     // The journeys shown, with their indexes. All of them with no line picked.
-    // A line picked from its badge filters them: only the journeys of that
-    // line alone, one trip each - a journey with a change shows unfiltered
-    // only - and a line that has no such journey shows as one, under an
-    // index of its own below zero: boarded and left where the first journey
-    // riding it does - the stop its rider waits at, not the terminus - else
-    // between its sensor's ends, with the vias a journey gives it.
+    // A line picked from its badge shows as one journey of its own, under
+    // an index below zero: the line read as a line, between its sensor's
+    // two ends, with every stop the trips get on it or off it on the way
+    // (_lineViaNames). The trips riding it say where those stops are, never
+    // how far the line goes: a line is its whole length, terminus to
+    // terminus, whatever a rider does with it.
     _visibleJourneys(li) {
         let all = (this._journeys || []).map((jr, ji) => ({ jr, ji }));
         // the stretches cut at a via are places for the destination header:
@@ -2961,14 +2961,7 @@ class Gtfs2LiveCard extends HTMLElement {
         if (li == null) return all;
         const def = this._lineDefs().find((d) => d.idx === li);
         if (!def?.entity) return [];
-        const mine = all.filter(({ jr }) => jr.legs.length === 1 && jr.legs[0].entity === def.entity);
-        if (mine.length) return mine;
-        // the leg riding it that names its vias, else the first one: its
-        // stops worth a number are the line's too, the places you may get
-        // off at, numbered on the map as on the journey
-        const rides = all.flatMap(({ jr }) => jr.legs).filter((l) => l.entity === def.entity);
-        const rode = rides.find((l) => l.via?.length) || rides[0];
-        return [{ jr: { name: null, legs: [{ entity: def.entity, via: rode?.via || [], getOn: rode?.getOn ?? null, getOff: rode?.getOff ?? null, over: {} }] }, ji: -1 - li }];
+        return [{ jr: { name: null, legs: [{ entity: def.entity, via: this._lineViaNames(def), getOn: null, getOff: null, over: {} }] }, ji: -1 - li }];
     }
 
     // Where a stop the config names sits on a leg: the shape's own stop when
@@ -2999,11 +2992,12 @@ class Gtfs2LiveCard extends HTMLElement {
         return i >= 0 ? { i } : null;
     }
 
-    // The stops on the way of a line on the board of lines: where the
-    // card's trips get on it or off it between the sensor's two ends - Les
-    // Aubrais on a train from Orléans a trip boards there - in riding order.
-    // [{p, leg}], empty for a line no trip leaves or joins on its way
-    _lineVias(def) {
+    // The stops on the way of a line: where the card's trips get on it or
+    // off it between the sensor's two ends - Les Aubrais on a train from
+    // Orléans a trip boards there - in riding order. The names alone,
+    // whichever trip rides them, which is what makes them the line's own
+    // and not one journey's. [] for a line no trip leaves or joins.
+    _lineViaNames(def) {
         if (!def?.entity) return [];
         const names = new Set();
         for (const jr of this._journeys || []) {
@@ -3016,7 +3010,15 @@ class Gtfs2LiveCard extends HTMLElement {
         if (!names.size) return [];
         const stops = this._legSlice(def, this._hass?.states?.[def.entity] || null).route?.stops || [];
         const at = (n) => { const i = stops.findIndex((x) => x.name === n); return i < 0 ? Infinity : i; };
-        const via = [...names].sort((a, b) => at(a) - at(b));
+        return [...names].sort((a, b) => at(a) - at(b));
+    }
+
+    // Those stops as the board prints them, on the line's own plan: the
+    // whole line, so a stop is numbered where it sits on it.
+    // [{p, leg}], empty for a line no trip leaves or joins on its way
+    _lineVias(def) {
+        const via = this._lineViaNames(def);
+        if (!via.length) return [];
         const plan = this._journeyPlan(-1 - def.idx, { name: null, legs: [{ entity: def.entity, via, getOn: null, getOff: null, over: {} }] });
         return plan ? plan.points.filter((p) => p.kind === "via").map((p) => ({ p, leg: p.leg })) : [];
     }
