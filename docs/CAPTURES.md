@@ -113,7 +113,21 @@ langues de la carte).
 python docs/shots.py hero selected     # seulement ces pages
 python docs/shots.py --lang en         # en anglais
 python docs/shots.py --mode dark       # sombre seulement
+python docs/shots.py --stock --out /tmp/stock   # comme sur un gtfs2 stock
 ```
+
+`--stock` (paramètre `stock=1` de la page) joue le main de vingerha : les
+capteurs perdent tout attribut que le fork ajoute (la liste est celle que
+`sensor.py` d'upstream pose, plus les préfixes d'`append_keys`, vérifiée
+contre ce que son `_update_attrs` produit vraiment), un capteur sans départ
+perd aussi ses lignes route, agence et course et son temps réel comme chez
+lui, le fichier de tracé arrive au format d'upstream (des points seuls, sans
+`boards` / `alights`) sous le nom que la carte reconstruit depuis la route et
+la direction, et aucun fichier leg ou timetable n'existe. Les heures
+d'arrivée sont tirées des durées, comme upstream les liste. Chaque page
+affiche alors ce qu'elle a dessiné (lignes, trajets, arrêts) et les erreurs
+du harnais : c'est la vérification que la carte tient sans le fork. `--out`
+est obligatoire, ces images ne vont jamais dans `images/`.
 
 ## Détails qui ont leur importance
 

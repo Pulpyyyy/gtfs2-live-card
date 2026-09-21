@@ -7,6 +7,7 @@ Orléans (see data/). Chrome opens each page and writes a PNG into images/.
     python docs/shots.py                 every page, light and dark
     python docs/shots.py hero selected   only those pages
     python docs/shots.py --lang en       in another language
+    python docs/shots.py --stock --out /tmp/stock   as on a stock gtfs2
 
 The card fetches its translations as ES modules, which a file:// page is not
 allowed to do, so the script serves the repository over HTTP on a free port
@@ -212,7 +213,18 @@ class Tab:
                 pass
 
 
-def shoot(chrome, port, page, mode, lang, size, scale, out):
+# What --stock reports of each page once drawn: the harness's own error box,
+# and what the cards show, so a page that renders "fine" but empty is seen.
+STOCK_REPORT = """(() => {
+  const cards = [...document.querySelectorAll("gtfs2-live-card")].map((c) => c.shadowRoot);
+  const n = (sel) => cards.reduce((s, r) => s + (r ? r.querySelectorAll(sel).length : 0), 0);
+  return JSON.stringify({ errors: (document.getElementById("fatal").textContent || "").trim(),
+    rows: n(".row"), journeys: n(".jseg"), broken: n(".jbroken"), stops: n(".stop"),
+    routes: n("path.route, polyline, path") });
+})()"""
+
+
+def shoot(chrome, port, page, mode, lang, size, scale, out, stock=False):
     """Open the page, wait for its own ready signal, photograph at its height.
 
     A window too short crops the last card and nothing says so, so the harness
@@ -222,7 +234,7 @@ def shoot(chrome, port, page, mode, lang, size, scale, out):
     """
     w, h = size
     url = (f"http://127.0.0.1:{port}/docs/screenshot-harness.html"
-           f"?page={page}&mode={mode}&lang={lang}")
+           f"?page={page}&mode={mode}&lang={lang}" + ("&stock=1" if stock else ""))
     tab = chrome.tab()
     try:
         tab.viewport(w, h, scale)
@@ -251,9 +263,10 @@ def shoot(chrome, port, page, mode, lang, size, scale, out):
             time.sleep(0.4)   # one layout pass at the new height
         data = tab.call("Page.captureScreenshot", format="png")["data"]
         out.write_bytes(base64.b64decode(data))
+        report = json.loads(tab.eval(STOCK_REPORT))
     finally:
         tab.close()
-    return (w, hh), out.stat().st_size
+    return (w, hh), out.stat().st_size, report
 
 
 def crop_pips(sheet, mode, scale):
@@ -302,7 +315,12 @@ def main():
     ap.add_argument("--scale", type=int, default=2, help="device pixel ratio (default 2)")
     ap.add_argument("--out", type=Path, default=IMAGES,
                     help="folder for the PNGs (default images/, the documentation's)")
+    ap.add_argument("--stock", action="store_true",
+                    help="play a stock gtfs2 (no fork attribute, upstream route file, no leg or "
+                         "timetable file) and report each page; needs --out, never images/")
     args = ap.parse_args()
+    if args.stock and args.out == IMAGES:
+        raise SystemExit("--stock draws what the documentation must not show: give --out")
 
     pages = args.pages or list(PAGES)
     unknown = [p for p in pages if p not in PAGES]
@@ -329,9 +347,14 @@ def main():
             for mode in modes:
                 out = IMAGES / f"{page}-{mode}.png"
                 out.unlink(missing_ok=True)
-                size, written = shoot(chrome, port, page, mode, args.lang,
-                                      PAGES[page], args.scale, out)
-                if page == "pips":
+                size, written, report = shoot(chrome, port, page, mode, args.lang,
+                                              PAGES[page], args.scale, out, args.stock)
+                if args.stock:
+                    print(f"  {out.name:26} stock: " + ", ".join(f"{k} {v}" for k, v in report.items() if k != "errors")
+                          + (f"\n    ERRORS: {report['errors']}" if report["errors"] else ""))
+                # a stock gtfs2 draws no rest or alert mark: its sheet is
+                # kept whole, to be looked at, not cut into the legend's files
+                if page == "pips" and not args.stock:
                     # the sheet is scaffolding: what ships is one small file
                     # per round mark, cut out of it
                     written = crop_pips(out, mode, args.scale)

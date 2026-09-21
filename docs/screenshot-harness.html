@@ -189,6 +189,11 @@ const q = new URLSearchParams(location.search);
 const page = q.get("page") || "hero";
 const dark = (q.get("mode") || "light") === "dark";
 const lang = q.get("lang") || "fr";
+// ?stock=1 plays a stock gtfs2 (vingerha's main): the sensors lose every
+// attribute the fork adds, the route file comes in upstream's points-only
+// format under the name the card rebuilds from route and direction, and no
+// leg or timetable file exists. What the card must survive on its own
+const stock = q.get("stock") === "1";
 document.documentElement.classList.toggle("dark", dark);
 
 const fatal = (e) => {
@@ -226,8 +231,21 @@ const iso = (epoch) => {
 /* Les positions sont servies telles quelles : la carte les lit par fetch,
  * donc on intercepte pour les rendre sans toucher au réseau ni au disque. */
 const realFetch = window.fetch;
+const json = (body) => Promise.resolve(new Response(JSON.stringify(body), {
+  status: 200, headers: { "Content-Type": "application/json" } }));
+// the names a stock gtfs2 writes, <route_id>_<direction>[_route].json,
+// sanitized as the card's safeFilePart does
+const safePart = (v) => String(v).toLowerCase().replace(/[^a-z0-9._-]+/g, "_").replace(/\.\.+/g, "_");
+const STOCK_NAMES = Object.fromEntries(Object.entries(network).map(([f, n]) =>
+  [`${safePart(n.route_id)}_${safePart(n.direction_id)}`, f]));
 window.fetch = (input, init) => {
   const url = String(input?.url || input);
+  if (stock) {
+    const sm = url.match(/\/([a-z0-9._-]+?)(_route)?\.json(\?|$)/i);
+    const f = sm && STOCK_NAMES[sm[1]];
+    if (f) return json(sm[2] ? routeGeojsonStock(f) : POS[f]);
+    if (/_leg_|timetable_/.test(url)) return Promise.resolve(new Response("", { status: 404 }));
+  }
   // `\w` matches the underscore, so the line name has to stop before it or
   // "tram-a_route.json" would be read as a line called "tram-a_route"
   // le fichier de tronçon d'un capteur, nommé par son attribut leg_geojson_file
@@ -273,6 +291,65 @@ function routeGeojson(file) {
       })),
     ],
   };
+}
+
+/* The route file as a stock gtfs2 writes it (update_route_geojson on
+ * upstream main): points only, no LineString, no boards / alights, and the
+ * id / title / trip_id the geojson integration wants. The card rebuilds the
+ * line from the points in stop_sequence order. */
+function routeGeojsonStock(file) {
+  const n = network[file];
+  const dir = String(n.direction_id);
+  return {
+    type: "FeatureCollection",
+    properties: { trip_id: `${file}-stock-trip`, route_id: n.route_id, direction_id: dir },
+    features: n.stops.map((s) => ({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [s.lon, s.lat] },
+      properties: { id: `${n.route_id}_${dir}_${s.stop_sequence}`, title: `${s.stop_name}_stop`,
+                    trip_id: `${file}-stock-trip`, stop_id: s.stop_id, stop_name: s.stop_name,
+                    stop_sequence: s.stop_sequence, departure_time: clock(6 * 3600 + s.stop_sequence * 90) },
+    })),
+  };
+}
+
+/* What a stock gtfs2 sensor carries: the attributes upstream's sensor.py
+ * sets by name, and those append_keys builds from a table row under its
+ * prefix. The fork's plural alert lists, its route file name and the
+ * destination's stop_sequence fall under a prefix but are the fork's, so
+ * they are named apart. Checked against the keys upstream's real
+ * _update_attrs produces (gtfs2's sensor comparison run on its main). */
+const STOCK_KEYS = new Set(["friendly_name", "icon", "attribution", "device_class",
+  "arrival", "day", "extracting", "info", "info_realtime", "last",
+  "destination_station_stop_id", "destination_station_stop_name", "destination_stop_alert",
+  "device_tracker_id", "gtfs_rt_updated_at", "gtfs_updated_at", "latitude", "longitude",
+  "next_delay_realtime", "next_delays_realtime", "next_departure_realtime", "next_departures",
+  "next_departures_destination_arrival_times", "next_departures_headsign", "next_departures_lines",
+  "next_departures_origin_stop_id", "next_departures_realtime", "next_departures_trips", "offset",
+  "origin_station_stop_id", "origin_station_stop_name", "origin_station_stop_sequence", "origin_stop_alert"]);
+const STOCK_PREFIXES = ["agency_", "origin_station_", "destination_station_", "route_", "trip_",
+  "origin_stop_", "destination_stop_"];
+const FORK_UNDER_PREFIX = new Set(["origin_stop_alerts", "destination_stop_alerts", "route_geojson_file",
+  "destination_station_stop_sequence"]);
+function stockAttributes() {
+  for (const st of Object.values(states)) {
+    const at = st.attributes;
+    // the fork's durations stand for the arrivals a stock sensor lists
+    if (!at.next_departures_destination_arrival_times && Array.isArray(at.next_departures)
+        && Array.isArray(at.next_departures_durations)) {
+      at.next_departures_destination_arrival_times = at.next_departures.map((d, i) =>
+        iso(Math.round(Date.parse(d) / 1000) - SHIFT + (at.next_departures_durations[i] || 0) * 60));
+    }
+    // a stock sensor with no departure left drops its route, agency and
+    // trip rows and its realtime: no colour, no short name, no route_id
+    const resting = !Array.isArray(at.next_departures) || !at.next_departures.length;
+    for (const k of Object.keys(at)) {
+      const kept = STOCK_KEYS.has(k) || (STOCK_PREFIXES.some((p) => k.startsWith(p)) && !FORK_UNDER_PREFIX.has(k));
+      const gone = resting && (/^(route|agency|trip)_/.test(k)
+        || ["next_departures_realtime", "next_delays_realtime", "gtfs_rt_updated_at"].includes(k));
+      if (!kept || gone) delete at[k];
+    }
+  }
 }
 
 /* Le fichier de tronçon, au format que gtfs2 exporte : pour chaque course
@@ -441,6 +518,9 @@ function card(config, caption, swatch, width) {
   // reconstruit la carte (la mémoire des choix) en a besoin telle quelle
   // la langue vient du profil, hass.locale, comme dans Home Assistant
   el.harnessConfig = { ...config };
+  // the pages set their sensors up before they place a card: stripped here,
+  // every override a page made is stripped with them
+  if (stock) stockAttributes();
   el.setConfig({ ...config });
   el.hass = hass;
   cell.appendChild(el);
@@ -506,7 +586,8 @@ async function strike(el, hits) {
                        "next_departures_durations", "next_departures_trips", "next_departures_realtime_trips"]) {
       if (Array.isArray(at[key])) at[key] = at[key].filter((_, i) => i !== k);
     }
-    at[kind === "cancelled" ? "cancelled_trips_realtime" : "skipped_trips_realtime"] = [tid];
+    // a stock gtfs2 names no struck trip: the run is only gone
+    if (!stock) at[kind === "cancelled" ? "cancelled_trips_realtime" : "skipped_trips_realtime"] = [tid];
     next[id] = { ...states[id], attributes: at, last_updated: new Date().toISOString() };
   }
   el.hass = { ...hass, states: next };
@@ -1139,6 +1220,8 @@ const ready = () => {
     // la page ne vaut que si les états qu'elle illustre sont bien là : la
     // pastille muette attend l'échec du fetch de son fichier de positions
     const has = (sel) => cards.some((c) => c.shadowRoot?.querySelector(sel));
+    // a stock gtfs2 says nothing of a resting line: only the cards count
+    if (stock) return cards.every((c) => c.shadowRoot?.querySelector("ha-card"));
     return cards.every((c) => c.shadowRoot?.querySelector(".dest"))
       && has(".dmark.mute") && has(".dmark.alert") && has(".dmark.rest");
   }
@@ -1154,7 +1237,9 @@ const ready = () => {
     // l'entête par destination n'est prête qu'avec ses puces
     if (page === "destinations") return !!root.querySelector(".dest");
     // la page n'est prête que les courses rayées : deux, une par sorte
-    if (page === "struck") return root.querySelectorAll(".chip-struck").length >= 2 || !!root.querySelector(".jbroken");
+    // (a stock gtfs2 names no struck run: there is no mark to wait for)
+    if (page === "struck") return stock ? true
+      : root.querySelectorAll(".chip-struck").length >= 2 || !!root.querySelector(".jbroken");
     if (!root.querySelector("svg")) return false;
     // la page popup n'est prête que la bulle ouverte
     if (page === "popup") {
