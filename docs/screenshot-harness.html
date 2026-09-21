@@ -857,6 +857,18 @@ try {
       // gtfs2 dit visés (stops), sauf s'il les nomme déjà
       { text: "Travaux", cause: "CONSTRUCTION", effect: "NO_SERVICE", stops: ["Halmagrand"] },
       { text: "Halmagrand : accès nord fermé", cause: "CONSTRUCTION", stops: ["Halmagrand"] },
+      // annoncée pour un autre jour : dite à part, avec son jour, sans
+      // repère sur l'arrêt qu'elle ferme
+      { text: "Travaux de modernisation - Trafic interrompu", cause: "CONSTRUCTION", effect: "NO_SERVICE",
+        stops: ["Gare d'Orléans"], periods: [
+          { start: new Date(Date.now() + 11 * 86400e3).toISOString(), end: new Date(Date.now() + 11.3 * 86400e3).toISOString() },
+          { start: new Date(Date.now() + 4 * 86400e3).toISOString(), end: new Date(Date.now() + 4.3 * 86400e3).toISOString() }] },
+    ];
+    // rien en cours sur le 40, une fermeture dans quatre jours : son badge
+    // reste de sa couleur, gtfs2 ne donne ni phrase ni effet
+    states[c].attributes.origin_stop_alerts = [
+      { text: "Mesures de sécurité - Trafic interrompu", cause: "POLICE_ACTIVITY", effect: "NO_SERVICE",
+        periods: [{ start: new Date(Date.now() + 4 * 86400e3).toISOString(), end: new Date(Date.now() + 4.25 * 86400e3).toISOString() }] },
     ];
     const el = card({ lines: [a, b, c], title: "Gare d'Orléans", max_departures: 8 }, null, null, 420);
     // le flux raye ensuite : la deuxième rame du A est supprimée, la
