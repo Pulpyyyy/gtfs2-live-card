@@ -39,9 +39,9 @@ A Lovelace card for the [gtfs2](https://github.com/vingerha/gtfs2) Home Assistan
 - **gtfs2 0.5.9.8 or later** exports each line's shape and ordered stops, which the map and the journey chaining need. The card finds these files on its own. On an older gtfs2 the map falls back on each vehicle's recent path, dashed.
 - **Live vehicles** need a GTFS-RT source with the `vehicle_positions > local file` output enabled. Without realtime the card still shows the board, the shapes and the stops.
 
-Some features read attributes that gtfs2 does not publish yet. They are written and proposed upstream, and run today on the `ext/rt-per-source` branch of [Pulpyyyy/gtfs2](https://github.com/Pulpyyyy/gtfs2/tree/ext/rt-per-source). On a stock gtfs2 these features simply do not show; nothing breaks.
+Some features read attributes that gtfs2 does not publish yet. They are written and proposed upstream, and run today on the `refactor/architecture` branch of [Pulpyyyy/gtfs2](https://github.com/Pulpyyyy/gtfs2/tree/refactor/architecture). On a stock gtfs2 these features simply do not show; nothing breaks.
 
-| Feature | Stock gtfs2 | Needs `ext/rt-per-source` |
+| Feature | Stock gtfs2 | Needs `refactor/architecture` |
 |---|---|---|
 | Board, delays, map, shapes, stops, vehicles, tracking | ✓ | |
 | Journeys chained on the timetable of the route shape | ✓ | |
@@ -127,9 +127,9 @@ A trip may take a `name`, the destination it belongs to in the *Journeys* header
 
 The board then lists the runs of all trips in one column, first to leave first, `max_departures` in all. Each row is tagged with its line and its ends. A journey with a change opens into a timeline: each leg in its line's colour, its numbered points and their clocks, the walk and the wait at each change, the arrival and the total time. The map draws the stretch of each line you ride, the walk between the two stops, and a numbered disc on every point.
 
-The first run you can take is always shown, even when a later one would arrive sooner. With the leg files of `ext/rt-per-source` (see [Requirements](#requirements)), every clock is the run's own, in bold when it comes from the realtime feed. Without them, a journey is timed on the timetable exported with the route shape.
+The first run you can take is always shown, even when a later one would arrive sooner. With the leg files of `refactor/architecture` (see [Requirements](#requirements)), every clock is the run's own, in bold when it comes from the realtime feed. Without them, a journey is timed on the timetable exported with the route shape.
 
-A long trip needs its later legs well ahead: a metro every four minutes lists its next forty minutes, and the train before it may arrive an hour and a half later. With the timetable files of `ext/rt-per-source`, the card reads a leg's runs past the sensor's list, on schedule, up to two days ahead; when no run is left in them it says when the next one is, or that none is published yet. Without them, a leg ends where its sensor's list does, and the note under the board says how far that is.
+A long trip needs its later legs well ahead: a metro every four minutes lists its next forty minutes, and the train before it may arrive an hour and a half later. With the timetable files of `refactor/architecture`, the card reads a leg's runs past the sensor's list, on schedule, up to two days ahead; when no run is left in them it says when the next one is, or that none is published yet. Without them, a leg ends where its sensor's list does, and the note under the board says how far that is.
 
 ![A trip with a change from tram A to tram B, and bus 40, on one board](images/journey-light.png)
 
