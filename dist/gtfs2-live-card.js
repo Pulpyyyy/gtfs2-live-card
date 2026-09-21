@@ -1,4 +1,4 @@
-const CARD_VERSION = "2.1.0";
+const CARD_VERSION = "2.1.1";
 
 console.info(
     `%c 🧭 GTFS2 Live Card %c v${CARD_VERSION} %c`,

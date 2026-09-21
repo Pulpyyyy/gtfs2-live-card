@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.1
+
+### Fixed
+
+- The README names the gtfs2 branch the fork features run on: `refactor/architecture`. It named `ext/rt-per-source`, which never wrote the timetable files the journeys read past a sensor's ten runs. The card itself is unchanged.
+
 ## 2.1.0
 
 ### Added
