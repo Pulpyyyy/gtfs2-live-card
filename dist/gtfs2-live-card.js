@@ -654,22 +654,22 @@ const alertKind = (cause, effect) => (ALERT_WORKS.includes(cause) ? "works"
     : (ALERT_INCIDENT.includes(cause) || effect === "NO_SERVICE") ? "incident"
     : "alert");
 
-// When an alert gtfs2 publishes applies next, if not now: the start of its
-// first period to come, or null when one of its periods covers now or it
-// has none (no period is the spec's "current"). IDFM announces works weeks
-// ahead, and a closure for next Saturday shown as tonight's turned metro 6
-// red on a quiet evening.
-const alertAhead = (it, now = Date.now()) => {
+// Whether an alert gtfs2 publishes applies to the ride ahead, from now to
+// the next departure of its sensor (at, its attributes): one of its periods
+// covers that span, or it has none (no period is the spec's "current").
+// Anything else is not said at all. IDFM announces works weeks ahead, and a
+// closure for next Saturday shown as tonight's turned metro 6 red on a
+// quiet evening; one over is gone even when the sensor has not caught up.
+const alertNow = (it, at, now = Date.now()) => {
     const periods = Array.isArray(it?.periods) ? it.periods : [];
-    if (!periods.length) return null;
-    let next = null;
-    for (const p of periods) {
+    if (!periods.length) return true;
+    const leaves = Date.parse(at?.next_departure_realtime || at?.origin_stop_departure_time || "");
+    const until = Number.isNaN(leaves) ? now : Math.max(now, leaves);
+    return periods.some((p) => {
         const s = p?.start ? Date.parse(p.start) : NaN;
         const e = p?.end ? Date.parse(p.end) : NaN;
-        if ((Number.isNaN(s) || s <= now) && (Number.isNaN(e) || e >= now)) return null;
-        if (!Number.isNaN(s) && s > now && (next === null || s < next)) next = s;
-    }
-    return next === null ? null : new Date(next);
+        return (Number.isNaN(s) || s <= until) && (Number.isNaN(e) || e >= now);
+    });
 };
 
 // glyph as a plain SVG path, centred on 0,0 and scaled so its ink reaches
@@ -871,7 +871,6 @@ const ICONS = {
     chevronRight: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>`,
     live: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M4 11a9 9 0 0 1 9 9"></path><path d="M4 4a16 16 0 0 1 16 16"></path><circle cx="5" cy="19" r="1.8" fill="currentColor" stroke="none"></circle></svg>`,
     pin: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.3-6-10a6 6 0 1 1 12 0c0 4.7-6 10-6 10z"></path><circle cx="12" cy="11" r="2.2"></circle></svg>`,
-    calendar: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="15" rx="2"></rect><path d="M4 10h16M9 3v4M15 3v4"></path></svg>`,
     alert: `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l10 18H2L12 3z"></path><path d="M12 10v5"></path><circle cx="12" cy="17.6" r="0.4" fill="currentColor"></circle></svg>`,
     // mdi:walk
     walk: `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M14.12,10H19V8.2H15.38L13.38,4.87C13.08,4.37 12.54,4.03 11.92,4.03C11.74,4.03 11.58,4.06 11.42,4.11L6,5.8V11H7.8V7.33L9.91,6.67L6,22H7.8L10.67,13.89L13,17V22H14.8V15.59L12.31,11.05L13.04,8.18M14,3.8C15,3.8 15.8,3 15.8,2C15.8,1 15,0.2 14,0.2C13,0.2 12.2,1 12.2,2C12.2,3 13,3.8 14,3.8Z"></path></svg>`,
@@ -1824,7 +1823,7 @@ class Gtfs2LiveCard extends HTMLElement {
             for (const k of ["origin_stop_alerts", "destination_stop_alerts"]) {
                 for (const it of Array.isArray(at[k]) ? at[k] : []) {
                     // a stop closed next week is open tonight
-                    if (alertAhead(it)) continue;
+                    if (!alertNow(it, at)) continue;
                     for (const nm of Array.isArray(it?.stops) ? it.stops : []) {
                         const key = String(nm).trim().toLowerCase();
                         if (!key) continue;
@@ -1899,9 +1898,9 @@ class Gtfs2LiveCard extends HTMLElement {
         if (!at) return null;
         // the head of the stack is the sentence of the string, with the
         // stops it names; the string alone on a gtfs2 without the stack
-        // an alert to come does not colour the badge: the line runs now
+        // an alert not under way does not colour the badge: the line runs
         const head = ["origin_stop_alerts", "destination_stop_alerts"]
-            .map((k) => (Array.isArray(at[k]) ? at[k].find((it) => it && !alertAhead(it)) : null)).find(Boolean);
+            .map((k) => (Array.isArray(at[k]) ? at[k].find((it) => it && alertNow(it, at)) : null)).find(Boolean);
         const text = head ? this._alertSay(head) : ["origin_stop_alert", "destination_stop_alert"]
             .map((k) => attrVal(at, k))
             .find((v) => v && v !== "no info") || "";
@@ -2894,7 +2893,7 @@ class Gtfs2LiveCard extends HTMLElement {
     _tripAlerts(a) {
         const out = new Map();
         for (const it of Array.isArray(a.origin_stop_alerts) ? a.origin_stop_alerts : []) {
-            if (alertAhead(it)) continue;
+            if (!alertNow(it, a)) continue;
             for (const t of Array.isArray(it?.trips) ? it.trips : []) {
                 const k = String(t);
                 if (!out.has(k)) out.set(k, []);
@@ -3815,8 +3814,6 @@ class Gtfs2LiveCard extends HTMLElement {
             chips.push(`<span class="info-chip">${ICONS.pin}${esc(stopName)}</span>`);
         }
         const seenAlerts = new Set();
-        // the alerts announced for later days, said after all the rest
-        const later = [];
         const alertSrcs = focusDef ? this._depSources().filter((s) => s.def && s.def.idx === focusDef.idx)
             : dlines ? this._depSources().filter((s) => s.def && dlines.has(s.def.idx)) : this._depSources();
         for (const src of alertSrcs) {
@@ -3833,19 +3830,16 @@ class Gtfs2LiveCard extends HTMLElement {
             const at = src.st.attributes || {};
             const stack = Array.isArray(at.origin_stop_alerts) ? at.origin_stop_alerts : [{ text: at.origin_stop_alert }];
             for (const it of stack) {
+                // announced for a later day, or over: not this ride's
+                if (!alertNow(it, at)) continue;
                 const text = this._alertSay(it);
                 if (!text) continue;
                 const label = prefix + text;
                 if (seenAlerts.has(label)) continue;
                 seenAlerts.add(label);
-                // announced for a later day: said after what runs now, in
-                // grey, with the day it starts
-                const ahead = alertAhead(it);
-                if (ahead) later.push(`<span class="info-chip info-ahead">${ICONS.calendar}${esc(`${this._fmtDay(ahead)} · ${label}`)}</span>`);
-                else chips.push(`<span class="info-chip info-alert">${ICONS.alert}${esc(label)}</span>`);
+                chips.push(`<span class="info-chip info-alert">${ICONS.alert}${esc(label)}</span>`);
             }
         }
-        chips.push(...later);
 
         const hiSt = focusDef?.entity ? this._hass?.states?.[focusDef.entity] : null;
         // "No upcoming departure" is a dead end: it is true, and it leaves the
@@ -6522,7 +6516,6 @@ class Gtfs2LiveCard extends HTMLElement {
         .info-strip { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--divider-color); }
         .info-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 8px; font-size: 11px; background: rgba(127,127,127,.12); color: var(--secondary-text-color); }
         .info-chip svg { flex: none; }
-        .info-ahead { opacity: .85; }
         .info-alert { background: rgba(230,81,0,.12); color: var(--gtfs2-late-color, #e65100); color: color-mix(in srgb, var(--gtfs2-late-color, #e65100) 75%, var(--primary-text-color, #212121)); }
         .empty { padding: 14px 16px; font-size: 13px; color: var(--secondary-text-color); }
         /* the resting note is written for a tooltip, where it follows the
