@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.2
+
+### Fixed
+
+- An operator's alert is said only while it applies: one of its periods covers the span from now to the next departure, or it has none. Networks publish works weeks ahead, and metro 6 read "Trafic interrompu", badge red, on quiet days for a closure four days off. An alert to come or over now gives no chip, no red badge, and no mark on a stop or a run. The periods come from gtfs2 `refactor/architecture`; on a gtfs2 that does not publish them every alert counts as current, as before.
+
 ## 2.1.1
 
 ### Fixed
