@@ -4054,11 +4054,18 @@ class Gtfs2LiveCard extends HTMLElement {
                 ? `<td class="fit">${r.def ? `<span class="row-badge" style="background:${esc(r.def.color)};color:${inkOn(r.def.color)}">${esc(this._lineLabelOf(r.def))}</span>` : "—"}</td>`
                 : "";
             // the last column takes the slack: the destination, or nothing
-            const last = showDest ? `<td>${esc(destOf(r)) || "—"}</td>` : `<td></td>`;
+            const last = showDest ? `<td class="dest-c">${esc(destOf(r)) || "—"}</td>` : `<td></td>`;
             const rv = this._rowVias(r, vias);
             const via = showVia ? `<td class="fit vias">${rv.length ? this._viasHtml(rv) : "—"}</td>` : "";
+            // the same words again, under the times, for a narrow card: on a
+            // phone seven columns left the stops on the way two letters of
+            // width ("Ras / pail / 06:0 / 3"). There the two columns of words
+            // go and this row says them whole; wide, it is never shown
+            const words = [showDest && destOf(r) ? `<span class="sub-dest">→ ${esc(destOf(r))}</span>` : "",
+                rv.length ? `<span class="sub-via">${this._t("col_via")} ${this._viasHtml(rv)}</span>` : ""].filter(Boolean);
+            const sub = words.length ? `<tr class="row-sub">${multi ? "<td></td>" : ""}<td colspan="${ncol - (multi ? 1 : 0)}">${words.join("")}</td></tr>` : "";
             return sep + `<tr>${line}<td class="num dep fit" title="${esc(depTitle)}">${dep}</td><td class="dly-c fit">${dly}</td>${via}<td class="num fit">${arr}</td>`
-                + `<td class="num fit">${dur}</td>${last}</tr>`;
+                + `<td class="num fit">${dur}</td>${last}</tr>` + sub;
         }).join("");
         const summary = nextRow ? `<div class="board-next">${this._t("next_dep_in", {
             c: `<span class="countdown" data-ts="${nextRow.time.getTime()}">${fmtCountdown(lang, nextRow.time, now)}</span>`,
@@ -4069,7 +4076,7 @@ class Gtfs2LiveCard extends HTMLElement {
             + (multi ? `<th class="fit">${this._t("col_line")}</th>` : "")
             + `<th class="num fit">${this._t("col_departure")}</th><th class="fit"></th>`
             + (showVia ? `<th class="fit vias">${this._t("col_via")}</th>` : "") + `<th class="num fit">${this._t("col_arrival")}</th>`
-            + `<th class="num fit">${this._t("col_duration")}</th><th>${showDest ? this._t("col_destination") : ""}</th>`
+            + `<th class="num fit">${this._t("col_duration")}</th><th${showDest ? ` class="dest-c"` : ""}>${showDest ? this._t("col_destination") : ""}</th>`
             + `</tr></thead><tbody>${cells}</tbody></table></div>`;
     }
 
@@ -6461,6 +6468,11 @@ class Gtfs2LiveCard extends HTMLElement {
         .board .num { text-align: right; }
         /* a day said once, on a row of its own */
         .board tr.day-sep td { padding: 8px 12px 2px; border-top: none; }
+        .board tr.row-sub { display: none; }
+        .board tr.row-sub td { border-top: none; padding-top: 0; white-space: normal; font-size: 12px; color: var(--secondary-text-color); }
+        .board tr.row-sub .sub-dest, .board tr.row-sub .sub-via { display: block; }
+        .board tr.row-sub .via-t { display: inline; white-space: nowrap; }
+        .board tr.row-sub b:not(.jbroken) { color: var(--primary-text-color); }
         /* the delay follows the time it moves */
         .board .dly { font-size: 11px; font-weight: 600; }
         .board .dly-c { padding-left: 0; }
@@ -6506,12 +6518,20 @@ class Gtfs2LiveCard extends HTMLElement {
                letter by letter, and - a letter being all the column then had
                to be - squeezed the stops on the way into a ribbon one
                character wide. Those stops are the only prose of the board,
-               so narrow they stop hugging their content and take the room
-               the times leave instead. */
+               so narrow they leave their columns for a row of their own
+               under the times, where they have the card's whole width: in
+               a column of their own, beside seven others, they were a
+               ribbon three letters wide. */
             .board:not(.jboard) td:last-child { white-space: normal; overflow-wrap: break-word; }
-            .board:not(.jboard) th.vias, .board:not(.jboard) td.vias { width: auto; white-space: normal; overflow-wrap: break-word; }
-            .board:not(.jboard) td.vias .via-t { white-space: normal; }
             .board:not(.jboard) td.dly-c { padding-right: 4px; }
+        }
+        /* The words leave their columns earlier than the padding shrinks: a
+           side panel of 500 px still pushed the destination past the edge
+           with the stops on the way beside it. Under 640 px they take the
+           row under the times. */
+        @container (max-width: 640px) {
+            .board:not(.jboard) .vias, .board:not(.jboard) .dest-c { display: none; }
+            .board:not(.jboard) tr.row-sub { display: table-row; }
         }
         .info-strip { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--divider-color); }
         .info-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 8px; font-size: 11px; background: rgba(127,127,127,.12); color: var(--secondary-text-color); }
