@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.3
+
+### Fixed
+
+- The departures table reads on a phone. Narrow, it kept all its columns and the stops on the way and the destination were squeezed into a ribbon a few letters wide, or pushed past the card's edge. Under 640 px of card, they leave their columns for a row of their own under each departure's times, at full width: the destination, then the stops on the way with their clocks. Wider, the table is unchanged.
+
 ## 2.1.2
 
 ### Fixed
