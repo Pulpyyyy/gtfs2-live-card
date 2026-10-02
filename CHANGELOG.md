@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.4
+
+### Fixed
+
+- A line picked from its badge in the Lines view brings the map onto it. On a card with lines only, the badge lit the line and the view stayed on the whole network; it now frames the line between its two ends, as the Journeys view already did.
+
 ## 2.1.3
 
 ### Fixed
