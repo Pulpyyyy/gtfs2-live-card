@@ -5143,6 +5143,10 @@ class Gtfs2LiveCard extends HTMLElement {
                 // far end of a line are still drawn, off screen until the
                 // user pans there, rather than stretching the view to them
                 pts = [...jGeo.fit, ...stations, ...pickedFit];
+            } else if (pickedFit.length) {
+                // the board of lines has no journey to fit: a line picked
+                // there fits its own ground all the same, not the network's
+                pts = [...pickedFit, ...stations];
             } else {
                 pts = all.map((e) => e.w);
                 pts.push(...stations);

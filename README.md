@@ -141,13 +141,13 @@ The header reads the card in one of two ways, switched by the **Lines / Journeys
 
 ### Lines
 
-One badge per line, in its official colour, with its mode and its state marks (see [below](#chip-and-badge-marks)). Tap a badge to keep that line's departures alone on the board, raise its shape above the others on the map, pin its two ends and keep only the vehicles running the departures on the board. Tap it again, or the chip in the departures pane's head, to go back to all lines.
+One badge per line, in its official colour, with its mode and its state marks (see [below](#chip-and-badge-marks)). Tap a badge to keep that line's departures alone on the board, bring the map onto the line between its two ends, raise its shape above the others, pin those ends and keep only the vehicles running the departures on the board. Tap it again, or the chip in the departures pane's head, to go back to all lines.
 
 In this view, the departures of a line also give their time at the stops where your trips get on it or off it on its way, Les Aubrais on a train from Orléans a trip boards there: under the row in the list, in a **Via** column in the table.
 
 ![Tram A picked from its badge](images/selected-light.png)
 
-*Tram A picked from its badge: the board keeps its departures only, and the map raises its shape, pins its ends and keeps only the tram running the first of those departures.*
+*Tram A picked from its badge: the board keeps its departures only, and the map comes onto it, raises its shape, pins its ends and keeps only the tram running the first of those departures.*
 
 ### Journeys
 
