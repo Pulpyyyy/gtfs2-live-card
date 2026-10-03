@@ -268,10 +268,24 @@ const findStopIdx = (stops, seq, id, name, from) => {
 // no case, no accents, punctuation and runs of spaces as one space. What an
 // outbound journey and its return are matched on - the names of their ends,
 // never their stop ids, which a station keeps one per platform.
+// "MAX Blue Line" -> "MBL": the first letter or digit of each word, three at most
+const initialsOf = (name) => String(name).split(/[\s/-]+/)
+    .map((w) => (w.match(/[\p{L}\p{N}]/u) || [""])[0]).join("").slice(0, 3).toUpperCase();
+
 const placeKey = (v) => String(v ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
 const WORLD = 1 << 28;        // Web-Mercator world size, in "world units"
+// Chrome caps every SVG length - cx, x, width, a transform's translate -
+// at 2^25, only path data escapes it. Drawn in world units, a card whose
+// lines span two continents had its stops pinned against that wall,
+// thousands of kilometres from where they belong, and the vehicles stuck in
+// the middle of the map. One SVG unit is this many world units: the whole
+// world then stays under 2^24, at about a centimetre.
+const SVG_UNIT = 16;
+const vehTransform = (v) => `translate(${v.x.toFixed(3)}px, ${v.y.toFixed(3)}px)`;
+// the overlay's numbers, at the precision SVG_UNIT asks for
+const vbAttr = (vb) => vb.map((v) => (v / SVG_UNIT).toFixed(3)).join(" ");
 const EARTH_CIRC = 40075016.686;
 const HIST_MAX = 30;
 const HIST_TTL = 15 * 60000;  // forget vehicles gone from the feed this long
@@ -345,7 +359,7 @@ const autoMode = (config) => (tripsOf(config).length ? "trips" : "lines");
 // then some 60000 units), and the label shrinks to a dash. The text is set
 // at its pixel size and scaled by the units per pixel instead.
 const svgText = (x, y, px, u, attrs, body) =>
-    `<text transform="translate(${x.toFixed(1)} ${y.toFixed(1)}) scale(${u})" font-size="${px}" ${attrs}>${body}</text>`;
+    `<text transform="translate(${x.toFixed(3)} ${y.toFixed(3)}) scale(${u})" font-size="${px}" ${attrs}>${body}</text>`;
 const BADGE_FS_MIN = 11;
 
 // Font size the number takes so it fits the badge without the badge moving.
@@ -369,6 +383,8 @@ const badgeFontSize = (label, family) => {
 const LABEL_SPAN = 3000;      // stop names label themselves under this map width (metres)
 const MARKER_SPAN_MIN = 600;  // at or under this map width, vehicle markers are full size
 const MARKER_SPAN_MAX = 12000;// at or over it, they sit at their smallest
+const FAR_PX = 48;            // the network under this many css px across: zoomed out past it
+const DBL_MS = 500;           // a click this soon after one that tracked a vehicle is its double
 const FOLLOW_MS = 700;        // vehicle glide: CSS transition of .bus, popup glide and camera follow
 
 // cubic-bezier easing, the same curve as the CSS timing functions, so a JS
@@ -907,6 +923,7 @@ class Gtfs2LiveCard extends HTMLElement {
         this._config = null;
         this._collapsed = { dep: false, map: false };
         this._focus = null;               // {li, vid} of the tracked vehicle, or null
+        this._trackAt = 0;                // when a click last started tracking one
         this._hiLine = null;              // line idx highlighted from its header badge
         // the destination header of a card of journeys: the departure picked
         // (its placeKey), the arrival picked (its group key) and the way to
@@ -1269,6 +1286,7 @@ class Gtfs2LiveCard extends HTMLElement {
             const at = d.entity && this._hass ? this._hass.states?.[d.entity]?.attributes : null;
             const cached = d.entity ? this._emeta.get(d.entity) : null;
             const short = attrVal(at, "route_route_short_name", "route_short_name") ?? cached?.short;
+            const long = attrVal(at, "route_route_long_name", "route_long_name") ?? cached?.long;
             const rcRaw = attrVal(at, "route_route_color", "route_color");
             let rc = rcRaw ? String(rcRaw).replace(/^#?/, "#") : (cached?.rc || null);
             if (rc && (!/^#[0-9a-fA-F]{6}$/.test(rc) || luminance(rc) > 0.82)) rc = null;
@@ -1285,12 +1303,16 @@ class Gtfs2LiveCard extends HTMLElement {
             if (d.entity) {
                 const patch = {};
                 if (short != null) patch.short = short;
+                if (long != null) patch.long = long;
                 if (rc) patch.rc = rc;
                 if (rtype != null) patch.mode = d.mode;
                 if (mdi) patch.icon = mdi;
                 if (Object.keys(patch).length) this._remember(d.entity, patch);
             }
             if (d.label == null && short != null && short !== "") d.label = String(short);
+            // a feed may name a line only in full (TriMet: "MAX Blue Line",
+            // no short name): its initials stand in, "MBL"
+            if (d.label == null && long) d.label = initialsOf(long) || null;
             if (!d.color) {
                 if (rc) {
                     const n = colorUse.get(rc) || 0;
@@ -1627,6 +1649,7 @@ class Gtfs2LiveCard extends HTMLElement {
     }
 
     _act(action, ds) {
+        if (action !== "stop") this._dbg(`action ${action}`, { ds: { ...ds } });
         if (action === "toggle-dep") {
             this._collapsed.dep = !this._collapsed.dep;
             this._persistCollapsed();
@@ -1646,6 +1669,7 @@ class Gtfs2LiveCard extends HTMLElement {
             if (!this._collapsed.map) this._fetchAll(true);
         } else if (action === "bus") {
             const li = Number(ds.li);
+            this._trackAt = performance.now();
             this._focus = { li, vid: ds.vid || "" };
             this._manual = false;
             // tracking a vehicle selects its line everywhere: header badge,
@@ -1888,8 +1912,8 @@ class Gtfs2LiveCard extends HTMLElement {
         if (!items?.length) return "";
         const kind = alertKind(items[0].cause, items[0].effect);
         const r = Math.max(9.5, base) * u;
-        return `<g pointer-events="none" transform="translate(${(x + r).toFixed(1)} ${(y - r).toFixed(1)})">`
-            + `<circle r="${r.toFixed(2)}" fill="var(--gtfs2-late-color, #e65100)" stroke="var(--card-background-color, #fff)" stroke-width="${(1.4 * u).toFixed(2)}"></circle>`
+        return `<g pointer-events="none" transform="translate(${(x + r).toFixed(3)} ${(y - r).toFixed(3)})">`
+            + `<circle r="${r.toFixed(3)}" fill="var(--gtfs2-late-color, #e65100)" stroke="var(--card-background-color, #fff)" stroke-width="${(1.4 * u).toFixed(3)}"></circle>`
             + modeGlyph(kind, r * (PIP_INK / (PIP / 2)), "var(--card-background-color, #fff)") + `</g>`;
     }
 
@@ -4719,7 +4743,7 @@ class Gtfs2LiveCard extends HTMLElement {
             const t = (target - route.cum[i - 1]) / segLen;
             const p = relFn({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
             const ang = (Math.atan2(b.x - a.x, -(b.y - a.y)) * 180) / Math.PI;
-            svg += `<path d="M0 ${-4 * u} L${3.2 * u} ${3 * u} L0 ${1.4 * u} L${-3.2 * u} ${3 * u} Z" fill="var(--card-background-color, #fff)" opacity="0.9" transform="translate(${p.x.toFixed(1)} ${p.y.toFixed(1)}) rotate(${ang.toFixed(1)})"></path>`;
+            svg += `<path d="M0 ${-4 * u} L${3.2 * u} ${3 * u} L0 ${1.4 * u} L${-3.2 * u} ${3 * u} Z" fill="var(--card-background-color, #fff)" opacity="0.9" transform="translate(${p.x.toFixed(3)} ${p.y.toFixed(3)}) rotate(${ang.toFixed(3)})"></path>`;
             target += step;
             count++;
         }
@@ -4825,8 +4849,11 @@ class Gtfs2LiveCard extends HTMLElement {
     }
 
     // a style just landed (first one, or a theme flip): drop the layers the
-    // card does without, and read the credit its sources ask for
+    // card does without, and read the credit its sources ask for. The SVG
+    // above is flat Web-Mercator: a style asking for the globe (VersaTiles
+    // does) would curl the land away from the stops and lines at low zoom.
     _basemapStyled(map) {
+        if (map.getProjection?.()?.type !== "mercator") map.setProjection({ type: "mercator" });
         const st = map.getStyle();
         for (const l of st?.layers || []) if (MAP_HIDE_LAYERS.has(l["source-layer"])) map.removeLayer(l.id);
         const credits = [];
@@ -4870,6 +4897,38 @@ class Gtfs2LiveCard extends HTMLElement {
     // MapLibre follows the SVG camera: the viewBox, sliced to the element's
     // box (preserveAspectRatio xMidYMid slice), is a centre and a zoom.
     // MapLibre counts 512 px tiles: the world is 512 * 2^zoom css px wide.
+    // A console trace of the map's moves, for a report: off unless asked,
+    //   localStorage.setItem("gtfs2-live-card:debug", "1")   then reload;
+    //   localStorage.removeItem("gtfs2-live-card:debug")     to stop.
+    // Each line says what moved the view, where the card thinks it is
+    // (centre, width) and where the base map is, and how many pixels apart
+    // the two centres are: anything past a pixel is the bug.
+    _dbg(what, extra) {
+        let on = false;
+        try { on = !!localStorage.getItem("gtfs2-live-card:debug"); } catch (e) { /* storage blocked */ }
+        if (!on) return;
+        const vb = this._viewBox, O = this._origin, map = this._map;
+        const info = { ...extra };
+        if (vb && O) {
+            const cx = O.x + vb[0] + vb[2] / 2, cy = O.y + vb[1] + vb[3] / 2;
+            info.center = [+((cx / WORLD) * 360 - 180).toFixed(5), +this._latOf(cy).toFixed(5)];
+            info.widthKm = +((vb[2] * this._mPerUNow) / 1000).toFixed(3);
+            info.viewBox = vb.map((v) => Math.round(v));
+            info.origin = [O.x, O.y];
+            if (map) {
+                const c = map.getCenter(), el = map.getContainer();
+                const p = map.project(info.center);
+                info.basemap = { center: [+c.lng.toFixed(5), +c.lat.toFixed(5)], zoom: +map.getZoom().toFixed(3) };
+                info.offsetPx = +Math.hypot(p.x - el.clientWidth / 2, p.y - el.clientHeight / 2).toFixed(1);
+            }
+        }
+        info.manual = this._manual;
+        if (this._focus) info.focus = this._focus;
+        const svg = this.shadowRoot.querySelector(".map-wrap svg");
+        if (svg?.classList.contains("far")) info.far = true;
+        console.log(`gtfs2-live-card map: ${what}`, info);
+    }
+
     _syncBasemap() {
         const map = this._map;
         const vb = this._viewBox, O = this._origin;
@@ -5166,7 +5225,20 @@ class Gtfs2LiveCard extends HTMLElement {
         // stable origin keeps SVG coordinates small (float precision) without
         // invalidating cached geometry on every pan
         if (!this._origin || Math.abs(target[0] - this._origin.x) > 2e6 || Math.abs(target[1] - this._origin.y) > 2e6) {
+            const old = this._origin;
             this._origin = { x: Math.floor(target[0]), y: Math.floor(target[1]) };
+            // the boxes still held are relative to the old origin: moved into
+            // the new one, or the glide below starts hundreds of km off, and a
+            // pinch under way jumps there on its next move. A running glide
+            // aims at a box of the old origin too: this render starts its own
+            if (old) {
+                const dx = old.x - this._origin.x, dy = old.y - this._origin.y;
+                const shift = (vb) => { vb[0] += dx; vb[1] += dy; };
+                if (this._anim) { cancelAnimationFrame(this._anim); this._anim = null; }
+                if (this._viewBox) shift(this._viewBox);
+                if (this._pinch) shift(this._pinch.vb);
+                this._dbg("origin moved", { from: [old.x, old.y] });
+            }
             // new origin: every relative coordinate changes, the vehicle
             // nodes must reappear in place rather than glide across the map
             this._vehEls.clear();
@@ -5174,7 +5246,8 @@ class Gtfs2LiveCard extends HTMLElement {
             if (vl) vl.innerHTML = "";
         }
         const O = this._origin;
-        const rel = (p) => ({ x: p.x - O.x, y: p.y - O.y });
+        // world -> SVG units (see SVG_UNIT); targetRel and the view stay in world units
+        const rel = (p) => ({ x: (p.x - O.x) / SVG_UNIT, y: (p.y - O.y) / SVG_UNIT });
         const targetRel = [target[0] - O.x, target[1] - O.y, target[2], target[3]];
 
         // animate explicit transitions, and follow the tracked vehicle
@@ -5194,8 +5267,9 @@ class Gtfs2LiveCard extends HTMLElement {
 
         const clientW = svgW || body.clientWidth || 408;
         this._lastW = body.clientWidth || this._lastW;
-        const u = vb[2] / clientW;                     // world units per css px
+        const u = vb[2] / clientW / SVG_UNIT;          // SVG units per css px
         const spanM = vb[2] * mPerU;                   // map span in metres
+        this._markFar(svg);
         // vehicle disc radius, in css px, eased between a close-up view where
         // the mode glyph must read and a whole-network view where markers
         // would otherwise pile onto each other
@@ -5303,11 +5377,11 @@ class Gtfs2LiveCard extends HTMLElement {
                 const shape = bent.get(def.idx) || route;
                 let dAll;
                 if (shape !== route) {
-                    dAll = shape.line.map((p, i) => `${i ? "L" : "M"}${(p.x - O.x).toFixed(1)} ${(p.y - O.y).toFixed(1)}`).join(" ");
+                    dAll = shape.line.map((p, i) => `${i ? "L" : "M"}${((p.x - O.x) / SVG_UNIT).toFixed(3)} ${((p.y - O.y) / SVG_UNIT).toFixed(3)}`).join(" ");
                 } else if (route._dCache && route._dCache.ox === O.x && route._dCache.oy === O.y) {
                     dAll = route._dCache.d;
                 } else {
-                    dAll = route.line.map((p, i) => `${i ? "L" : "M"}${(p.x - O.x).toFixed(1)} ${(p.y - O.y).toFixed(1)}`).join(" ");
+                    dAll = route.line.map((p, i) => `${i ? "L" : "M"}${((p.x - O.x) / SVG_UNIT).toFixed(3)} ${((p.y - O.y) / SVG_UNIT).toFixed(3)}`).join(" ");
                     route._dCache = { ox: O.x, oy: O.y, d: dAll };
                 }
                 if (isFocusLine) {
@@ -5318,8 +5392,8 @@ class Gtfs2LiveCard extends HTMLElement {
                     const lineRel = shape.line.map(rel);
                     const k = shape.pins?.get(focusEntry.key);
                     const pr = rel(busW);
-                    const passed = lineRel.slice(0, k ?? prj.idx + 1).map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ") + ` L${pr.x.toFixed(1)} ${pr.y.toFixed(1)}`;
-                    const ahead = `M${pr.x.toFixed(1)} ${pr.y.toFixed(1)} ` + lineRel.slice(k != null ? k + 1 : prj.idx + 1).map((p) => `L${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
+                    const passed = lineRel.slice(0, k ?? prj.idx + 1).map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(3)} ${p.y.toFixed(3)}`).join(" ") + ` L${pr.x.toFixed(3)} ${pr.y.toFixed(3)}`;
+                    const ahead = `M${pr.x.toFixed(3)} ${pr.y.toFixed(3)} ` + lineRel.slice(k != null ? k + 1 : prj.idx + 1).map((p) => `L${p.x.toFixed(3)} ${p.y.toFixed(3)}`).join(" ");
                     routeSvg += `<path d="${passed}" fill="none" stroke="#8a9096" stroke-width="${3.5 * u}" stroke-dasharray="${7 * u} ${7 * u}" opacity="0.7" stroke-linecap="round"></path>`;
                     routeSvg += `<path d="${ahead}" fill="none" stroke="${esc(color)}" stroke-width="${5 * u}" opacity="0.92" stroke-linecap="round"></path>`;
                     const next = route.stops.find((s) => s.cum > prj.cum + 15);
@@ -5336,7 +5410,7 @@ class Gtfs2LiveCard extends HTMLElement {
                         const underPop = placed.some((b) => nbox.x < b.x + b.w && nbox.x + nbox.w > b.x && nbox.y < b.y + b.h && nbox.y + nbox.h > b.y);
                         placed.push(nbox);
                         if (!underPop) {
-                            routeSvg += `<g><rect x="${nbox.x.toFixed(1)}" y="${nbox.y.toFixed(1)}" width="${labelW.toFixed(1)}" height="${(17 * u).toFixed(1)}" rx="${(8.5 * u).toFixed(1)}" fill="var(--card-background-color, #fff)" opacity="0.95"></rect>
+                            routeSvg += `<g><rect x="${nbox.x.toFixed(3)}" y="${nbox.y.toFixed(3)}" width="${labelW.toFixed(3)}" height="${(17 * u).toFixed(3)}" rx="${(8.5 * u).toFixed(3)}" fill="var(--card-background-color, #fff)" opacity="0.95"></rect>
                             ${svgText(p.x, p.y - 12 * u, 10, u, 'font-weight="500" fill="var(--primary-text-color, #212121)" text-anchor="middle"', esc(next.name))}</g>`;
                         }
                     }
@@ -5347,7 +5421,7 @@ class Gtfs2LiveCard extends HTMLElement {
                     // names; the points get their numbers further down
                     routeSvg += `<path d="${dAll}" fill="none" stroke="${esc(color)}" stroke-width="${4.5 * u}" opacity="0.18" stroke-linecap="round"></path>`;
                     for (const g of jGeo.byLine.get(def.idx)) {
-                        const d = g.sub.line.map((p, i) => `${i ? "L" : "M"}${(p.x - O.x).toFixed(1)} ${(p.y - O.y).toFixed(1)}`).join(" ");
+                        const d = g.sub.line.map((p, i) => `${i ? "L" : "M"}${((p.x - O.x) / SVG_UNIT).toFixed(3)} ${((p.y - O.y) / SVG_UNIT).toFixed(3)}`).join(" ");
                         routeSvg += `<path d="${d}" fill="none" stroke="${esc(color)}" stroke-width="${5 * u}" opacity="0.92" stroke-linecap="round"></path>`;
                         routeSvg += this._routeArrows(g.sub, rel, u, spanM);
                         for (const s of g.stops) {
@@ -5376,7 +5450,7 @@ class Gtfs2LiveCard extends HTMLElement {
                     if (h.length > 1) {
                         const d = h.map((p, i) => {
                             const q = rel(this._world(p.lat, p.lon));
-                            return `${i ? "L" : "M"}${q.x.toFixed(1)} ${q.y.toFixed(1)}`;
+                            return `${i ? "L" : "M"}${q.x.toFixed(3)} ${q.y.toFixed(3)}`;
                         }).join(" ");
                         const active = focusEntry
                             ? (focusEntry.def.idx === def.idx && this._vid(focusEntry.f) === this._vid(e.f))
@@ -5394,13 +5468,13 @@ class Gtfs2LiveCard extends HTMLElement {
         const sc = this._stationColor();
         for (const station of stations) {
             const s = rel(station);
-            stationSvg += `<circle cx="${s.x.toFixed(1)}" cy="${s.y.toFixed(1)}" r="${13 * u}" fill="${esc(sc)}" opacity="0.2"></circle>`;
+            stationSvg += `<circle cx="${s.x.toFixed(3)}" cy="${s.y.toFixed(3)}" r="${13 * u}" fill="${esc(sc)}" opacity="0.2"></circle>`;
             if (station.end === "end") {
-                stationSvg += `<circle cx="${s.x.toFixed(1)}" cy="${s.y.toFixed(1)}" r="${9 * u}" fill="${esc(sc)}" stroke="var(--card-background-color, #fff)" stroke-width="${2 * u}"></circle>
-                          <rect x="${(s.x - 3 * u).toFixed(1)}" y="${(s.y - 3 * u).toFixed(1)}" width="${6 * u}" height="${6 * u}" rx="${0.8 * u}" fill="var(--card-background-color, #fff)"></rect>`;
+                stationSvg += `<circle cx="${s.x.toFixed(3)}" cy="${s.y.toFixed(3)}" r="${9 * u}" fill="${esc(sc)}" stroke="var(--card-background-color, #fff)" stroke-width="${2 * u}"></circle>
+                          <rect x="${(s.x - 3 * u).toFixed(3)}" y="${(s.y - 3 * u).toFixed(3)}" width="${6 * u}" height="${6 * u}" rx="${0.8 * u}" fill="var(--card-background-color, #fff)"></rect>`;
             } else {
-                stationSvg += `<circle cx="${s.x.toFixed(1)}" cy="${s.y.toFixed(1)}" r="${9 * u}" fill="var(--card-background-color, #fff)" stroke="${esc(sc)}" stroke-width="${3.5 * u}"></circle>
-                          <circle cx="${s.x.toFixed(1)}" cy="${s.y.toFixed(1)}" r="${3.2 * u}" fill="${esc(sc)}"></circle>`;
+                stationSvg += `<circle cx="${s.x.toFixed(3)}" cy="${s.y.toFixed(3)}" r="${9 * u}" fill="var(--card-background-color, #fff)" stroke="${esc(sc)}" stroke-width="${3.5 * u}"></circle>
+                          <circle cx="${s.x.toFixed(3)}" cy="${s.y.toFixed(3)}" r="${3.2 * u}" fill="${esc(sc)}"></circle>`;
             }
         }
         // ── journey points: the walk of a change first (dotted, under the
@@ -5409,14 +5483,14 @@ class Gtfs2LiveCard extends HTMLElement {
             const ink = inkOn(sc);
             for (const w of jGeo.walks) {
                 const a = rel(w.from), b = rel(w.to);
-                stationSvg += `<path d="M${a.x.toFixed(1)} ${a.y.toFixed(1)} L${b.x.toFixed(1)} ${b.y.toFixed(1)}" fill="none" stroke="${esc(sc)}" stroke-width="${3 * u}" stroke-dasharray="${1 * u} ${6 * u}" stroke-linecap="round" opacity="0.9"></path>`;
+                stationSvg += `<path d="M${a.x.toFixed(3)} ${a.y.toFixed(3)} L${b.x.toFixed(3)} ${b.y.toFixed(3)}" fill="none" stroke="${esc(sc)}" stroke-width="${3 * u}" stroke-dasharray="${1 * u} ${6 * u}" stroke-linecap="round" opacity="0.9"></path>`;
             }
             // the other journeys' points first, so the numbered ones sit on top
             for (const p of jGeo.others) {
                 const c = rel(p.pos);
-                stationSvg += `<g class="stop jpt" data-action="stop" data-li="${p.li}" data-name="${esc(p.name)}" data-x="${c.x.toFixed(1)}" data-y="${c.y.toFixed(1)}">
-                    <circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${14 * u}" fill="${esc(sc)}" opacity="0.2"></circle>
-                    <circle class="dot" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${10 * u}" fill="${esc(sc)}" stroke="var(--card-background-color, #fff)" stroke-width="${2.5 * u}"></circle>
+                stationSvg += `<g class="stop jpt" data-action="stop" data-li="${p.li}" data-name="${esc(p.name)}" data-x="${c.x.toFixed(3)}" data-y="${c.y.toFixed(3)}">
+                    <circle cx="${c.x.toFixed(3)}" cy="${c.y.toFixed(3)}" r="${14 * u}" fill="${esc(sc)}" opacity="0.2"></circle>
+                    <circle class="dot" cx="${c.x.toFixed(3)}" cy="${c.y.toFixed(3)}" r="${10 * u}" fill="${esc(sc)}" stroke="var(--card-background-color, #fff)" stroke-width="${2.5 * u}"></circle>
                     ${this._alertPipSvg(this._stopAlertsAt(p.li, p.name), c.x + 4 * u, c.y - 4 * u, u, 10)}</g>`;
             }
             // points closer than a disc are one mark - a start next to the
@@ -5434,12 +5508,12 @@ class Gtfs2LiveCard extends HTMLElement {
                 const name = [...new Set(pts.map((q) => q.name).filter(Boolean))].join(" / ");
                 const w = Math.max(20, 7 * text.length + 8) * u;
                 const halo = pts.length > 1
-                    ? `<rect x="${(c.x - w / 2 - 4 * u).toFixed(1)}" y="${(c.y - 14 * u).toFixed(1)}" width="${(w + 8 * u).toFixed(1)}" height="${(28 * u).toFixed(1)}" rx="${(14 * u).toFixed(1)}" fill="${esc(sc)}" opacity="0.2"></rect>`
-                        + `<rect class="dot" x="${(c.x - w / 2).toFixed(1)}" y="${(c.y - 10 * u).toFixed(1)}" width="${w.toFixed(1)}" height="${(20 * u).toFixed(1)}" rx="${(10 * u).toFixed(1)}" fill="${esc(sc)}" stroke="var(--card-background-color, #fff)" stroke-width="${2.5 * u}"></rect>`
-                    : `<circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${14 * u}" fill="${esc(sc)}" opacity="0.2"></circle>`
-                        + `<circle class="dot" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${10 * u}" fill="${esc(sc)}" stroke="var(--card-background-color, #fff)" stroke-width="${2.5 * u}"></circle>`;
+                    ? `<rect x="${(c.x - w / 2 - 4 * u).toFixed(3)}" y="${(c.y - 14 * u).toFixed(3)}" width="${(w + 8 * u).toFixed(3)}" height="${(28 * u).toFixed(3)}" rx="${(14 * u).toFixed(3)}" fill="${esc(sc)}" opacity="0.2"></rect>`
+                        + `<rect class="dot" x="${(c.x - w / 2).toFixed(3)}" y="${(c.y - 10 * u).toFixed(3)}" width="${w.toFixed(3)}" height="${(20 * u).toFixed(3)}" rx="${(10 * u).toFixed(3)}" fill="${esc(sc)}" stroke="var(--card-background-color, #fff)" stroke-width="${2.5 * u}"></rect>`
+                    : `<circle cx="${c.x.toFixed(3)}" cy="${c.y.toFixed(3)}" r="${14 * u}" fill="${esc(sc)}" opacity="0.2"></circle>`
+                        + `<circle class="dot" cx="${c.x.toFixed(3)}" cy="${c.y.toFixed(3)}" r="${10 * u}" fill="${esc(sc)}" stroke="var(--card-background-color, #fff)" stroke-width="${2.5 * u}"></circle>`;
                 const pal = pts.map((q) => this._stopAlertsAt(q.li, q.name)).find(Boolean);
-                stationSvg += `<g class="stop jpt" data-action="stop" data-li="${p.li}" data-name="${esc(name)}" data-x="${c.x.toFixed(1)}" data-y="${c.y.toFixed(1)}">
+                stationSvg += `<g class="stop jpt" data-action="stop" data-li="${p.li}" data-name="${esc(name)}" data-x="${c.x.toFixed(3)}" data-y="${c.y.toFixed(3)}">
                     ${halo}
                     ${svgText(c.x, c.y + 3.8 * u, 11, u, `font-weight="700" fill="${ink}" text-anchor="middle" pointer-events="none"`, esc(text))}
                     ${this._alertPipSvg(pal, c.x + (pts.length > 1 ? w / 2 - 2 * u : 4 * u), c.y - 4 * u, u, 10)}</g>`;
@@ -5447,7 +5521,7 @@ class Gtfs2LiveCard extends HTMLElement {
         }
         // ── the ends' words, ringed in the station colour, above the markers
         for (const l of endLabels) {
-            stationSvg += `<g pointer-events="none"><rect x="${l.box.x.toFixed(1)}" y="${l.box.y.toFixed(1)}" width="${l.box.w.toFixed(1)}" height="${l.box.h.toFixed(1)}" rx="${(7.5 * u).toFixed(1)}" fill="var(--card-background-color, #fff)" stroke="${esc(sc)}" stroke-width="${(1.2 * u).toFixed(2)}" opacity="0.95"></rect>`
+            stationSvg += `<g pointer-events="none"><rect x="${l.box.x.toFixed(3)}" y="${l.box.y.toFixed(3)}" width="${l.box.w.toFixed(3)}" height="${l.box.h.toFixed(3)}" rx="${(7.5 * u).toFixed(3)}" fill="var(--card-background-color, #fff)" stroke="${esc(sc)}" stroke-width="${(1.2 * u).toFixed(3)}" opacity="0.95"></rect>`
                 + svgText(l.box.x + 6 * u, l.box.y + l.box.h / 2 + 3.4 * u, 9.5, u, 'font-weight="700" fill="var(--primary-text-color, #212121)"', esc(l.text)) + "</g>";
         }
 
@@ -5489,7 +5563,7 @@ class Gtfs2LiveCard extends HTMLElement {
             // heading arrow: only when a heading is known, and only on the
             // markers big enough to carry it without turning into a blob
             const beak = angle != null && (focused || !dim)
-                ? `<g class="hd"><path d="M0 ${(-R - 10 * u).toFixed(1)} L${(6.6 * u).toFixed(1)} ${(-R + 1.4 * u).toFixed(1)} L${(-6.6 * u).toFixed(1)} ${(-R + 1.4 * u).toFixed(1)} Z" fill="${esc(def.color)}" stroke="var(--card-background-color, #fff)" stroke-width="${(1.6 * u).toFixed(2)}" stroke-linejoin="round"></path></g>`
+                ? `<g class="hd"><path d="M0 ${(-R - 10 * u).toFixed(3)} L${(6.6 * u).toFixed(3)} ${(-R + 1.4 * u).toFixed(3)} L${(-6.6 * u).toFixed(3)} ${(-R + 1.4 * u).toFixed(3)} Z" fill="${esc(def.color)}" stroke="var(--card-background-color, #fff)" stroke-width="${(1.6 * u).toFixed(3)}" stroke-linejoin="round"></path></g>`
                 : "";
             const inner = `
                 <circle r="${Math.max(22, R / u + 9) * u}" fill="transparent" stroke="none"></circle>
@@ -5505,7 +5579,7 @@ class Gtfs2LiveCard extends HTMLElement {
                 aria: `${modeWord(lang, def.mode || "bus", false)} ${vid}` });
         }
 
-        svg.setAttribute("viewBox", vb.map((v) => v.toFixed(1)).join(" "));
+        svg.setAttribute("viewBox", vbAttr(vb));
         this._syncBasemap();
         svg.querySelector(".l-overlay").innerHTML = routeSvg + stationSvg;
         this._syncVehicles(svg.querySelector(".l-veh"), vehicles);
@@ -5584,7 +5658,7 @@ class Gtfs2LiveCard extends HTMLElement {
                 g.setAttribute("data-vid", v.vid);
                 g.setAttribute("role", "button");
                 g.setAttribute("tabindex", "0");
-                g.style.transform = `translate(${v.x.toFixed(1)}px, ${v.y.toFixed(1)}px)`;
+                g.style.transform = vehTransform(v);
                 g._inner = null;
                 g._ang = null;
                 this._vehEls.set(v.key, g);
@@ -5601,7 +5675,7 @@ class Gtfs2LiveCard extends HTMLElement {
             const hd = g.querySelector(".hd");
             if (hd) { g._ang = a; hd.style.transform = `rotate(${a.toFixed(1)}deg)`; }
             else g._ang = null;
-            if (!fresh) g.style.transform = `translate(${v.x.toFixed(1)}px, ${v.y.toFixed(1)}px)`;
+            if (!fresh) g.style.transform = vehTransform(v);
             const at = layer.children[idx];
             if (at !== g) layer.insertBefore(g, at || null);
             idx++;
@@ -5729,10 +5803,10 @@ class Gtfs2LiveCard extends HTMLElement {
         const st = route?.stops;
         const term = !!st?.length && (s === st[0] || s === st[st.length - 1]);
         const dot = term
-            ? `<rect class="dot" x="${(p.x - r).toFixed(1)}" y="${(p.y - r).toFixed(1)}" width="${(2 * r).toFixed(2)}" height="${(2 * r).toFixed(2)}" rx="${(0.6 * u).toFixed(2)}" fill="var(--card-background-color, #fff)" stroke="${stroke}" stroke-width="${sw}"></rect>`
-            : `<circle class="dot" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${r.toFixed(2)}" fill="var(--card-background-color, #fff)" stroke="${stroke}" stroke-width="${sw}"></circle>`;
-        return `<g class="stop" data-action="stop" data-li="${li}" data-name="${esc(s.name)}" data-x="${p.x.toFixed(1)}" data-y="${p.y.toFixed(1)}">`
-            + `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${11 * u}" fill="transparent"></circle>`
+            ? `<rect class="dot" x="${(p.x - r).toFixed(3)}" y="${(p.y - r).toFixed(3)}" width="${(2 * r).toFixed(3)}" height="${(2 * r).toFixed(3)}" rx="${(0.6 * u).toFixed(3)}" fill="var(--card-background-color, #fff)" stroke="${stroke}" stroke-width="${sw}"></rect>`
+            : `<circle class="dot" cx="${p.x.toFixed(3)}" cy="${p.y.toFixed(3)}" r="${r.toFixed(3)}" fill="var(--card-background-color, #fff)" stroke="${stroke}" stroke-width="${sw}"></circle>`;
+        return `<g class="stop" data-action="stop" data-li="${li}" data-name="${esc(s.name)}" data-x="${p.x.toFixed(3)}" data-y="${p.y.toFixed(3)}">`
+            + `<circle cx="${p.x.toFixed(3)}" cy="${p.y.toFixed(3)}" r="${11 * u}" fill="transparent"></circle>`
             + dot + this._alertPipSvg(this._stopAlertsAt(li, s.name), p.x, p.y, u, hub ? baseR + 1.6 : baseR) + `</g>`;
     }
 
@@ -5750,7 +5824,7 @@ class Gtfs2LiveCard extends HTMLElement {
             if (placed.some((b) => box.x < b.x + b.w && box.x + box.w > b.x && box.y < b.y + b.h && box.y + box.h > b.y)) continue;
             placed.push(box);
             if (full) this._shownLabels.add(String(s.name).trim().toLowerCase());
-            svg += `<g pointer-events="none"><rect x="${box.x.toFixed(1)}" y="${box.y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="${(7 * u).toFixed(1)}" fill="var(--card-background-color, #fff)" opacity="0.88"></rect>`
+            svg += `<g pointer-events="none"><rect x="${box.x.toFixed(3)}" y="${box.y.toFixed(3)}" width="${w.toFixed(3)}" height="${h.toFixed(3)}" rx="${(7 * u).toFixed(3)}" fill="var(--card-background-color, #fff)" opacity="0.88"></rect>`
                 + svgText(box.x + 5 * u, p.y + 3.3 * u, 9, u, 'fill="var(--primary-text-color, #212121)"', esc(name)) + "</g>";
         }
         return svg;
@@ -5831,7 +5905,7 @@ class Gtfs2LiveCard extends HTMLElement {
             + (sayAl ? `<span class="tip-alert">${esc(sayAl)}</span>` : "");
         tip.classList.toggle("tip-wrap", !!sayAl);
         const vb = this._viewBox, w = svg.clientWidth || 408, h = svg.clientHeight || 204;
-        const sx = ((Number(ds.x) - vb[0]) / vb[2]) * w, sy = ((Number(ds.y) - vb[1]) / vb[3]) * h;
+        const sx = ((Number(ds.x) * SVG_UNIT - vb[0]) / vb[2]) * w, sy = ((Number(ds.y) * SVG_UNIT - vb[1]) / vb[3]) * h;
         tip.hidden = false;
         // Placed from its own size: an alert's sentence makes it tall, and a
         // tall tip over a stop near the top drew itself clean out of the
@@ -5888,18 +5962,19 @@ class Gtfs2LiveCard extends HTMLElement {
             this._viewBox = to;
             return;
         }
+        this._dbg("glide start", { to: to.map((v) => Math.round(v)) });
         const start = performance.now();
         const step = (now) => {
             const t = Math.min(1, (now - start) / dur);
             const e = ease ? ease(t) : 1 - Math.pow(1 - t, 3);
             this._viewBox = from.map((v, i) => v + (to[i] - v) * e);
             const svg = this.shadowRoot.querySelector(".map-wrap svg");
-            if (svg) svg.setAttribute("viewBox", this._viewBox.map((v) => v.toFixed(1)).join(" "));
+            if (svg) svg.setAttribute("viewBox", vbAttr(this._viewBox));
             this._syncBasemap();
             this._positionPop();
             this._updateScale();
             if (t < 1) this._anim = requestAnimationFrame(step);
-            else { this._anim = null; this._viewBox = to; this._renderMap(false); }
+            else { this._anim = null; this._viewBox = to; this._renderMap(false); this._dbg("glide end"); }
         };
         this._anim = requestAnimationFrame(step);
     }
@@ -5964,12 +6039,23 @@ class Gtfs2LiveCard extends HTMLElement {
     }
 
     _clampVB(vb) {
-        const minW = 100 / this._mPerUNow, maxW = WORLD / 4;
+        // half the world at most: a card whose lines span two continents
+        // fits wider than a quarter, and its first zoom out snapped in
+        const minW = 100 / this._mPerUNow, maxW = WORLD / 2;
         if (vb[2] < minW || vb[2] > maxW) {
             const w = Math.max(minW, Math.min(maxW, vb[2]));
             const f = w / vb[2];
             const cx = vb[0] + vb[2] / 2, cy = vb[1] + vb[3] / 2;
-            return [cx - (vb[2] * f) / 2, cy - (vb[3] * f) / 2, vb[2] * f, vb[3] * f];
+            vb = [cx - (vb[2] * f) / 2, cy - (vb[3] * f) / 2, vb[2] * f, vb[3] * f];
+        }
+        // the base map stops at the antimeridian and at the poles' cut-off
+        // (one world, no copies): a view let past them slid the overlay on
+        // while the land stood still
+        const O = this._origin;
+        if (O) {
+            const x = Math.max(-O.x, Math.min(WORLD - O.x - vb[2], vb[0]));
+            const y = Math.max(-O.y, Math.min(WORLD - O.y - vb[3], vb[1]));
+            if (x !== vb[0] || y !== vb[1]) vb = [x, y, vb[2], vb[3]];
         }
         return vb;
     }
@@ -5981,10 +6067,38 @@ class Gtfs2LiveCard extends HTMLElement {
         this._hideTip();
         this._panHover = true;
         this._setViewBox(this._clampVB(this._viewBox));
-        svg.setAttribute("viewBox", this._viewBox.map((v) => v.toFixed(1)).join(" "));
+        svg.setAttribute("viewBox", vbAttr(this._viewBox));
         this._syncBasemap();
         this._positionPop();
         this._updateScale();
+        this._markFar(svg);
+    }
+
+    // Zoomed far out, the lines shrink to a speck with every vehicle and
+    // stop piled on it, and a click there means "closer": a vehicle under
+    // it took the click and started tracking, the second click of the
+    // double-click then fell on the background mid-glide and dropped the
+    // tracking, and the zoom landed where the speck no longer was. In that
+    // view the markers let the clicks through to the map.
+    _markFar(svg) {
+        const vb = this._viewBox;
+        const w = svg.clientWidth || this._scaleW || 408;
+        if (!vb || !w) return;
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        for (const s of this._ld) {
+            const r = s.route;
+            if (!r?.line?.length) continue;
+            if (r._bbLine !== r.line) {
+                let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity;
+                for (const p of r.line) { a = Math.min(a, p.x); b = Math.min(b, p.y); c = Math.max(c, p.x); d = Math.max(d, p.y); }
+                r._bb = [a, b, c, d];
+                r._bbLine = r.line;
+            }
+            x0 = Math.min(x0, r._bb[0]); y0 = Math.min(y0, r._bb[1]);
+            x1 = Math.max(x1, r._bb[2]); y1 = Math.max(y1, r._bb[3]);
+        }
+        const far = x0 < Infinity && Math.max(x1 - x0, y1 - y0) / (vb[2] / w) < FAR_PX;
+        svg.classList.toggle("far", far);
     }
 
     _scheduleRerender() {
@@ -6080,13 +6194,17 @@ class Gtfs2LiveCard extends HTMLElement {
             if (t) {
                 this._suppressClick = true; // the retargeted/native click must not re-activate
                 this._activate(t);
-            } else if (this._focus) {
-                // a tap on the background closes the popup, view unchanged
+            } else if (this._focus && !(performance.now() - this._trackAt < DBL_MS)) {
+                // a tap on the background closes the popup, view unchanged.
+                // Not the second click of a double-click on a vehicle: the
+                // map glided off under the cursor between the two, and the
+                // tracking the first one started is what the user asked for
                 this._suppressClick = true;
                 this._act("untrack", {});
             }
         }
         if (this._pointers.size === 0) this._multi = false;
+        if (this._manual && this._moved > 5) this._dbg(this._multi || e.pointerType === "touch" ? "pinch / pan end" : "drag end");
         if (this._manual) this._scheduleRerender();
         setTimeout(() => { this._suppressClick = false; }, 250);
     }
@@ -6107,23 +6225,31 @@ class Gtfs2LiveCard extends HTMLElement {
         this._manual = true;
         this._setViewBox([wx - (wx - this._viewBox[0]) * f, wy - (wy - this._viewBox[1]) * f, this._viewBox[2] * f, this._viewBox[3] * f]);
         this._applyVB(svg);
+        this._dbg(f < 1 ? "wheel in" : "wheel out", { at: [Math.round(e.clientX - rect.left), Math.round(e.clientY - rect.top)] });
         this._scheduleRerender();
     }
 
-    // double-click: recentre on the clicked point and zoom in one step.
-    // Not on a bus: a single click there already focuses it.
+    // double-click: zoom in one step around the clicked point, which stays
+    // under the pointer, as the wheel does. It used to recentre on it: the
+    // map slid away from a pointer held still, the next double-click landed
+    // on empty ground, and a few of them aimed beside a line pushed the line
+    // off the map. Not on a bus: a single click there already focuses it.
     _mapDblClick(e, svg) {
         if (!this._viewBox) return;
         if (e.composedPath().some((n) => n.dataset && n.dataset.action === "bus")) return;
+        // nor right after a click that tracked one: the vehicle has glided
+        // away from under the second click, which is not a zoom of its own
+        if (performance.now() - this._trackAt < DBL_MS) return;
         e.preventDefault();
         const rect = svg.getBoundingClientRect();
         const u = this._viewBox[2] / (rect.width || 408);
         const wx = this._viewBox[0] + (e.clientX - rect.left) * u;
         const wy = this._viewBox[1] + (e.clientY - rect.top) * u;
-        const w = this._viewBox[2] * 0.5, h = this._viewBox[3] * 0.5;
+        const vb = this._viewBox, f = 0.5;
         this._manual = true;
-        this._setViewBox(this._clampVB([wx - w / 2, wy - h / 2, w, h]));
+        this._setViewBox(this._clampVB([wx - (wx - vb[0]) * f, wy - (wy - vb[1]) * f, vb[2] * f, vb[3] * f]));
         this._applyVB(svg);
+        this._dbg("double-click", { at: [Math.round(e.clientX - rect.left), Math.round(e.clientY - rect.top)] });
         this._scheduleRerender();
     }
 
@@ -6138,6 +6264,7 @@ class Gtfs2LiveCard extends HTMLElement {
         this._manual = true;
         this._setViewBox(this._clampVB([cx - (vb[2] * f) / 2, cy - (vb[3] * f) / 2, vb[2] * f, vb[3] * f]));
         this._renderMap(false);
+        this._dbg(f < 1 ? "button +" : "button -");
     }
 
     /* ── STYLES ─────────────────────────────────────────────────────────── */
@@ -6555,6 +6682,7 @@ class Gtfs2LiveCard extends HTMLElement {
         .map-gl canvas { outline: none; }
         .map-wrap svg { position: relative; display: block; width: 100%; aspect-ratio: 2 / 1; touch-action: pan-y; cursor: grab; }
         .map-wrap svg:active { cursor: grabbing; }
+        .map-wrap svg.far .bus, .map-wrap svg.far .stop { pointer-events: none; }
         @container (max-width: 380px) { .map-wrap svg { aspect-ratio: 4 / 3; } }
         .bus { cursor: pointer; transition: transform .7s ease-out; }
         .bus .hd { transition: transform .7s ease-out; transform-origin: 0 0; }

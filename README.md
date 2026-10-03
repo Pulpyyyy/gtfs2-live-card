@@ -86,7 +86,7 @@ That is the card at the top of this page. Any entry can be an object that overri
 ```yaml
 lines:
   - entity: sensor.gare_orleans_bus_40
-    line: "40"                    # badge label (default: route_short_name)
+    line: "40"                    # badge label (default: route_short_name, else the long name's initials)
     color: "#24a472"              # line colour (default: route_color)
 ```
 
@@ -228,7 +228,7 @@ A run that takes nobody on where you board, or sets nobody down where you get of
 
 A vector base map ([MapLibre](https://maplibre.org/), [VersaTiles](https://versatiles.org/) styles on OpenStreetMap data) following the Home Assistant theme, light or dark. On it, the route shapes with direction arrows, their stops in order, the origin station, and the realtime vehicles, each with its mode's glyph and a heading arrow. Stops name themselves once the view is tight enough. Hover or tap a stop to see its name and the other lines of the card that call there. Markers keep a readable size at any zoom.
 
-- **Mouse**: drag to pan, **Ctrl + wheel** to zoom (the plain wheel keeps scrolling the page), double-click to zoom in.
+- **Mouse**: drag to pan, **Ctrl + wheel** to zoom (the plain wheel keeps scrolling the page), double-click to zoom in around the pointer.
 - **Touch**: two fingers to pan and pinch (one finger keeps scrolling the page).
 - **Buttons**: zoom in and out, recenter after a manual move, and *Overview* while tracking.
 - Line badges, destination chips, section heads and vehicles are keyboard operable (Tab, then Enter).
@@ -240,6 +240,8 @@ A vector base map ([MapLibre](https://maplibre.org/), [VersaTiles](https://versa
 *Following tram 58 on line A: the route behind it turns dashed, and the popup names its terminus and its next stop.*
 
 The browser loads the MapLibre library, the style, the tiles and the fonts itself (from jsDelivr and VersaTiles), so it needs the internet. Without WebGL or without the library, the routes and vehicles still draw on a plain background, and the map's footer says why. `map_style` sets another base map: a MapLibre style URL, or a raster `{z}/{x}/{y}` tile URL.
+
+If the drawing and the base map ever part ways, the card can say what it does with the view: `localStorage.setItem("gtfs2-live-card:debug", "1")` in the browser console, then reload. Every move (wheel, double-click, buttons, drag, pinch, glides, actions) logs a `gtfs2-live-card map:` line with the centre, the width in km, where the base map is, and `offsetPx`, the pixels between the two; past one pixel, that line belongs in a bug report. `localStorage.removeItem("gtfs2-live-card:debug")` turns it off.
 
 The card keeps its requests light: files are shared between cards showing the same line, polling pauses while the browser tab is hidden and slows down five times while the map pane is collapsed, and a burst of sensor updates is drawn once. A realtime source is judged fresh from its positions file's own date. A line whose file has not been rewritten for 8 minutes drops its vehicles from the map, and vehicles left over after the end of service are hidden.
 
@@ -285,7 +287,7 @@ An entry of `lines` is a sensor id, or an object with these keys:
 | Key | Description |
 |---|---|
 | `entity` | The gtfs2 sensor. |
-| `line` | The badge label (default: the route's short name). |
+| `line` | The badge label (default: the route's short name; a feed that names the line only in full, such as TriMet's "MAX Blue Line", gets its initials, "MBL"). |
 | `color` | The line's colour (default: the route's colour). |
 | `positions_url` | The vehicle positions file (default: named by the sensor, or derived from its route and direction the way gtfs2 names it). |
 | `route_url` | The route shape file (default: likewise). |
