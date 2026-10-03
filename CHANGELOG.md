@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.2.0
+
+### Added
+
+- A console trace of the map's moves, for a bug report: `localStorage.setItem("gtfs2-live-card:debug", "1")`, then reload. Every move of the view logs where the card thinks it is, where the base map is, and the pixels between the two.
+
+### Fixed
+
+- The map's drawing stays on its base map at any zoom. Zoomed far out, the base map curled into a globe under a flat drawing; it stays flat. On a card whose lines span two continents, Chrome's cap on SVG lengths pinned stops and vehicles thousands of kilometres from where they belong (Chartres in Minnesota); the overlay is drawn in units that never reach the cap.
+- The view no longer leaves the lines it is zoomed onto. A double-click zooms around the pointer instead of recentring, so a few of them no longer push a line off the map; a refresh during a pinch no longer throws the view away; a double-click on a vehicle tracks it and stays tracking; the first zoom out of a two-continent card zooms out; and the view stops where the base map does, at the antimeridian and the poles.
+- A line a feed names only in full (TriMet's "MAX Blue Line", no short name) shows its initials on its badge, MBL, instead of a dot.
+
 ## 2.1.4
 
 ### Fixed
