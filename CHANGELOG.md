@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.3.0
+
+### Added
+
+- A train sensor that gathers several stations at one end, such as Orléans and Les Aubrais to Paris, is read station by station. Each departure leaves from its own station. A trip boarded at Orléans only offers the trains that call there, and one boarded at Les Aubrais offers them all, timed at Les Aubrais. The stretch of line the card searches on starts at the first of those stations, not at the one the next train leaves from, as long as the route shape gtfs2 exports calls there (see Limitations in the README). The editor reads the sensor the same way. This needs `origin_stations` and `destination_stations` from gtfs2 `refactor/architecture`.
+- A sensor that rides several lines shows each of them. In the Lines view the sensor gets one square per line (K8+, P8, K6+), and any of them picks the whole sensor. The destination chips carry one plate per line, and each departure carries its own line's badge. Each line keeps the colour its feed gives it (K8+ purple, P8 green), even when the next train is on another line. The lines come from gtfs2's `lines`, and from the lines the departures ride when it is missing. The colours come from `line_colors`, and from the colours seen on the sensor's departures when it is missing.
+- A place where a way changes is an arrival of its own. Going from Orléans to Mairie de Montrouge by way of Paris Austerlitz, Austerlitz is offered as an arrival without a trip of its own, with the trains of that way.
+
+### Changed
+
+- A line keeps its colour when only its vehicle positions file has gone quiet: its timetable and realtime still stand, and its mark and tooltip say what happened. It is greyed only when its sensor is gone from Home Assistant or unavailable, when nothing it shows is current.
+- A line whose feed gives no colour takes one of the card's own colours per line, not per sensor. Its two directions now share the same colour.
+
+### Fixed
+
+- A train that never calls where a trip ends is no longer offered for that trip. A K6+ to Tours, which passes Les Aubrais but never Orléans, was listed for Paris to Orléans with an arrival time worked out from the line's shape. A run that calls there with no drop-off allowed, or that the feed says skips the stop today, is still listed without an arrival, as before.
+- One station filed under several records, as SNCF does with one record per kind of train sharing the same UIC code, is recognised as one place when the card matches a run to a station.
+- The editor no longer offers, for a line, a sensor that another line of the card already uses. Picked twice, the sensor drew its line twice: two badges and every departure listed twice.
+
 ## 2.2.0
 
 ### Added
