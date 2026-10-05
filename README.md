@@ -55,6 +55,9 @@ Some features read attributes that gtfs2 does not publish yet. They are written 
 | Runs that take nobody on or set nobody down at a stop | | ✓ |
 | A replacement coach on a train line shown as a coach | | ✓ |
 | Files named by the sensor instead of derived | derived from route and direction | ✓ |
+| A train sensor gathering several stations at an end, each departure boarded at its own | | ✓ |
+| One square per line on a sensor riding several lines (K8+, P8, K6+) | the lines its listed departures ride | ✓ |
+| Each of those lines in its own colour | once seen on a next departure | ✓ |
 
 ## Installation
 
@@ -141,7 +144,7 @@ The header reads the card in one of two ways, switched by the **Lines / Journeys
 
 ### Lines
 
-One badge per line, in its official colour, with its mode and its state marks (see [below](#chip-and-badge-marks)). Tap a badge to keep that line's departures alone on the board, bring the map onto the line between its two ends, raise its shape above the others, pin those ends and keep only the vehicles running the departures on the board. Tap it again, or the chip in the departures pane's head, to go back to all lines.
+One badge per line, in its official colour, with its mode and its state marks (see [below](#chip-and-badge-marks)). A sensor that rides several lines, such as a train sensor taking K8+, P8 and K6+ from Orléans to Paris, gets one square per line, each in that line's colour; any of them picks the whole sensor, and each departure on the board wears its own line. Tap a badge to keep that line's departures alone on the board, bring the map onto the line between its two ends, raise its shape above the others, pin those ends and keep only the vehicles running the departures on the board. Tap it again, or the chip in the departures pane's head, to go back to all lines.
 
 In this view, the departures of a line also give their time at the stops where your trips get on it or off it on its way, Les Aubrais on a train from Orléans a trip boards there: under the row in the list, in a **Via** column in the table.
 
@@ -154,7 +157,7 @@ In this view, the departures of a line also give their time at the stops where y
 The header asks where you are going. It has two rows, marked **D** and **A** like the ends of a journey:
 
 - **Departure**: every place your trips start from, the most used first. That one is picked until you pick another. Tap the picked departure again to see everything.
-- **Arrival**: one chip per place reachable from that departure. The chips carry no time, since no journey is chosen yet; a chip only says when nothing runs from it any more. Trips that share a `name` are one arrival. An unnamed trip is named after where it ends.
+- **Arrival**: one chip per place reachable from that departure. The chips carry no time, since no journey is chosen yet; a chip only says when nothing runs from it any more. Trips that share a `name` are one arrival. An unnamed trip is named after where it ends. A place where one of the ways changes is an arrival too, with that way's runs up to there: going from Orléans to Mairie de Montrouge by way of Paris Austerlitz, Austerlitz is offered without a trip of its own.
 
 Tap an arrival to list its **ways to leave**: *Direct* for a single sensor, *Via* the line a change starts with, or *Then* the line it ends with when every way starts on the same line. Each way shows its next departure and the alert mark that sets it apart. A way with no run says why: a line resting today, a change that would wait too long, a stop the runs do not call at. A way is also a filter of the board; tap it again to clear it.
 
@@ -187,7 +190,7 @@ A chip starts with a plate per line it rides, in riding order, each with its num
 
 ![Three departures, the arrival from one and its ways to leave](images/destinations-light.png)
 
-*Above, trips leaving from three places: from L'Indien, the card reaches Halmagrand two ways, tram A then tram B, or tram A to the station then bus 40, and the chip carries the alert of the tram B; the return, by bus 40, files itself under Halmagrand. Below, a card with a single destination: its ways to leave are listed straight away, and its colour is set with `destination_color`.*
+*Above, trips leaving from three places: from L'Indien, the card reaches Halmagrand two ways, tram A then tram B, or tram A to the station then bus 40, and the chip carries the alert of the tram B; De Gaulle and Gare d'Orléans, where those ways change, are arrivals too; the return, by bus 40, files itself under Halmagrand. Below, a card with a single trip: Halmagrand, its colour set with `destination_color`, and De Gaulle, where its way changes.*
 
 ## The departures board
 
@@ -218,6 +221,7 @@ A run that takes nobody on where you board, or sets nobody down where you get of
 - a stop where no run of a line takes anybody on is never where a way boards it, nor one where none sets anybody down where a way leaves it;
 - a run that does not take passengers on where you board is left out, and the next run that does is offered;
 - a run that does not set passengers down where you get off is listed without an arrival; on a journey with a change, its timeline says *no alighting here*;
+- a run that never calls where you get off is not offered: on a trip to Orléans, a train to Tours that only stops at Les Aubrais;
 - when no listed run takes anybody on there, the board says so under it.
 
 ![Runs that take nobody on or set nobody down](images/boarding-light.png)
@@ -252,7 +256,7 @@ A destination chip in the *Journeys* view is also the status display of the line
 | Position | Marks | Meaning |
 |---|---|---|
 | Line plates<br><picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-pos-mode-dark.png"><img src="images/pip-pos-mode-light.png" width="236" alt="a destination chip, its line plate on the left"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-bus-dark.png"><img src="images/pip-bus-light.png" width="44" alt="bus"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-tram-dark.png"><img src="images/pip-tram-light.png" width="44" alt="tram"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-metro-dark.png"><img src="images/pip-metro-light.png" width="44" alt="metro"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-train-dark.png"><img src="images/pip-train-light.png" width="44" alt="train"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-trolleybus-dark.png"><img src="images/pip-trolleybus-light.png" width="44" alt="trolleybus"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-ferry-dark.png"><img src="images/pip-ferry-light.png" width="44" alt="ferry"></picture> | **Line and mode.** One plate per line the destination is reached by: its number on its colour, and on the band at its foot its mode, from the sensor's route type. Here bus, tram, metro, train, trolleybus and ferry; gondola, funicular, monorail, taxi, plane and a generic vehicle complete the set. `mode_icons: false` drops the band and keeps the number. |
-| Top left<br><picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-pos-tl-dark.png"><img src="images/pip-pos-tl-light.png" width="236" alt="a destination chip, the quiet-source mark top left"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-mute-dark.png"><img src="images/pip-mute-light.png" width="30" alt="quiet source"></picture> | **Quiet source.** The realtime source of a line has stopped answering: the sensor is gone from Home Assistant or unavailable, or its positions file is unreachable or has not been rewritten for 8 minutes. The line's plate loses its colour while it lasts, and the tooltip says which it is and since when. |
+| Top left<br><picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-pos-tl-dark.png"><img src="images/pip-pos-tl-light.png" width="236" alt="a destination chip, the quiet-source mark top left"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-mute-dark.png"><img src="images/pip-mute-light.png" width="30" alt="quiet source"></picture> | **Quiet source.** The realtime source of a line has stopped answering: the sensor is gone from Home Assistant or unavailable, or its positions file is unreachable or has not been rewritten for 8 minutes. A sensor gone or unavailable greys its line's plate, its lightness kept; a positions file gone quiet alone leaves the colour. The tooltip says which it is and since when. |
 | Top right<br><picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-pos-tr-dark.png"><img src="images/pip-pos-tr-light.png" width="236" alt="a destination chip, the alert mark top right"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-alert-dark.png"><img src="images/pip-alert-light.png" width="30" alt="disruption"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-works-dark.png"><img src="images/pip-works-light.png" width="30" alt="engineering works"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-incident-dark.png"><img src="images/pip-incident-light.png" width="30" alt="incident"></picture> | **Operator alert** on a line or on one of its runs (GTFS-RT alerts): an exclamation mark for a disruption, a cone for engineering works, a bolt for an incident. The cone and the bolt need the alert's cause (see [Requirements](#requirements)); without it the generic mark shows, never a cone that would be wrong about a strike. |
 | Bottom left<br><picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-pos-bl-dark.png"><img src="images/pip-pos-bl-light.png" width="236" alt="a destination chip, the rest mark bottom left"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-tomorrow-dark.png"><img src="images/pip-tomorrow-light.png" width="30" alt="resumes tomorrow"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-days-dark.png"><img src="images/pip-days-light.png" width="30" alt="resumes in n days"></picture> <picture><source media="(prefers-color-scheme: dark)" srcset="images/pip-never-dark.png"><img src="images/pip-never-light.png" width="30" alt="no service scheduled"></picture> | **Resting line.** Nothing runs there today, and the chip says in words when it is back: a dial for tomorrow, a calendar for *n* days, a cross when no service is scheduled at all. |
 
@@ -317,6 +321,7 @@ To add a language, copy `dist/lang/en.js`, translate the values, and add its cod
 - Without the gtfs2 route export (before 0.5.9.8) there is no shape and no ordered stops, so no journey can be timed; the map shows each vehicle's recent path, dashed.
 - On a gtfs2 that does not name the trip behind each realtime time, a realtime time is paired with a scheduled one only within 10 minutes, so the card never claims a wrong delay. A run later than that shows twice: once as realtime, once as scheduled.
 - A cancelled run can be struck through only if the card listed it before the feed cancelled it: gtfs2 then drops it from the sensor at once and keeps only its id, so a card opened afterwards has no time to strike.
+- A train sensor gathering several stations at its start reads its stations from the route shape gtfs2 exports, which is drawn from the line of the next departure. While that line skips one of the stations (a K6+ from Tours calls at Les Aubrais, never at Orléans), the ways from that station by this sensor are not offered; they come back with the next train that calls there.
 - gtfs2 exports no speed, heading or per-vehicle timestamp. The card estimates heading and speed from successive positions, so the speed needs two distinct positions, and freshness is known per file, not per vehicle.
 
 ## License

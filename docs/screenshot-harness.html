@@ -364,8 +364,10 @@ function legGeojson(key) {
   const trips = {};
   L.theo.forEach((t, i) => {
     const stops = {};
+    const from = L.originSeqs?.[i] ?? L.originSeq;
     for (const s of n.stops) {
-      const sch = t + (s.stop_sequence - L.originSeq) * 90;
+      if (s.stop_sequence < from) continue;
+      const sch = t + (s.stop_sequence - from) * 90;
       const st = { sequence: s.stop_sequence, scheduled_arrival: iso(sch), scheduled: iso(sch) };
       if (i < L.rtRuns) { st.expected = iso(sch + (L.delays[i] || 0)); st.delay = L.delays[i] || 0; }
       // un arrêt que le flux raye sur cette course : skipped, sans heure attendue
@@ -444,6 +446,14 @@ function sensor(file, opts = {}) {
   // la course derrière chaque heure temps réel, dans l'ordre des heures,
   // comme gtfs2 la publie : c'est par elle que la carte apparie le temps
   // réel à son horaire. Posée après les surcharges, sur leurs propres ids
+  // un capteur train qui réunit plusieurs gares au départ : la gare d'où
+  // part chaque passage (opts.origins, des noms d'arrêt), comme gtfs2 la
+  // publie dans next_departures_origin_stop_id
+  if (opts.origins) {
+    const at = states[id].attributes;
+    at.next_departures_origin_stop_id = at.next_departures.map((_, i) =>
+      (n.stops.find((x) => x.stop_name === opts.origins[i]) || n.reference).stop_id);
+  }
   {
     const at = states[id].attributes;
     if (!at.next_departures_realtime_trips && Array.isArray(at.next_departures_realtime)
@@ -466,6 +476,7 @@ function sensor(file, opts = {}) {
       delays: at.next_delays_realtime || [],
       tripIds: at.next_departures_trips,
       originSeq: origin.stop_sequence,
+      originSeqs: opts.origins ? opts.origins.map((nm) => (n.stops.find((x) => x.stop_name === nm) || origin).stop_sequence) : null,
       rtRuns: opts.rtRuns ?? 3,
       skipped: opts.skipped || null,
       noBoard: opts.noBoard || null,
@@ -805,6 +816,64 @@ try {
            trips: [["L'Indien", "Halmagrand"], ["Gare d'Orléans - Quai E", "Petite Mérie"]],
            title: "My journeys", max_departures: 5 },
          null, null, 500);
+  } else if (page === "multi") {
+    // Un capteur qui réunit deux gares au départ, comme gtfs2 le fait d'un
+    // train « Orléans + Les Aubrais → Paris » : le tram A en tient lieu,
+    // L'Indien et l'arrêt deux plus loin. Chaque passage dit d'où il part
+    // (next_departures_origin_stop_id) ; les courses 0, 2 et 5 partent de la
+    // seconde gare et ne passent pas à L'Indien. Le prochain départ part de
+    // la seconde : les attributs origin_station_* la nomment, la portion du
+    // trajet doit quand même commencer à L'Indien.
+    // En haut, un trajet pris à L'Indien : seules les courses 1, 3 et 4.
+    // En bas, pris à la seconde gare : les six, celles de L'Indien à leur
+    // passage là (+3 min).
+    stage.style.gridTemplateColumns = "500px";
+    const stopOf = (f, name) => network[f].stops.find((s) => s.stop_name === name);
+    const run = (f, a, b) => (stopOf(f, b).stop_sequence - stopOf(f, a).stop_sequence) * 90;
+    const ind = stopOf("tram-a", "L'Indien");
+    const second = network["tram-a"].stops.find((x) => x.stop_sequence === ind.stop_sequence + 2);
+    const gaulle = stopOf("tram-a", "De Gaulle");
+    const origins = [second.stop_name, "L'Indien", second.stop_name, "L'Indien", "L'Indien", second.stop_name];
+    const legA = sensor("tram-a", { suffix: "ms", leg: true, delays: [0, 62, 0, 130, 0, 0], origins,
+      duration: Math.round(run("tram-a", "L'Indien", "De Gaulle") / 60),
+      attributes: { friendly_name: `A — L'Indien + ${second.stop_name} → De Gaulle`,
+        origin_stations: ["L'Indien", second.stop_name], destination_stations: ["De Gaulle"],
+        origin_station_stop_id: second.stop_id, origin_station_stop_name: second.stop_name,
+        destination_station_stop_id: gaulle.stop_id, destination_station_stop_name: gaulle.stop_name } });
+    const tramRows = deps["tram-a"];
+    const bTheo = tramRows.map((r, i) => r.time + run("tram-a", "L'Indien", "De Gaulle") + [300, 480, 240, 600, 360, 420][i]);
+    const bDur = Math.round(run("tram-b", "De Gaulle", "Halmagrand") / 60);
+    const gB = stopOf("tram-b", "De Gaulle"), hB = stopOf("tram-b", "Halmagrand");
+    const legB = sensor("tram-b", { suffix: "ms2", leg: true, duration: bDur, attributes: {
+      friendly_name: "B — De Gaulle → Halmagrand",
+      origin_station_stop_id: gB.stop_id, origin_station_stop_name: gB.stop_name,
+      destination_station_stop_id: hB.stop_id, destination_station_stop_name: hB.stop_name,
+      next_departures: bTheo.map(iso), next_departures_realtime: bTheo.map(iso),
+      next_delays_realtime: bTheo.map(() => 0), next_departures_durations: bTheo.map(() => bDur),
+      next_departures_trips: bTheo.map((_, i) => `tram-b-ms2-trip-${i}`),
+    } });
+    card({ lines: [legA, legB], trips: [["L'Indien", "Halmagrand"]],
+           title: "Boarding at L'Indien", max_departures: 6 }, null, null, 500);
+    card({ lines: [legA, legB], trips: [[second.stop_name, "Halmagrand"]],
+           title: `Boarding at ${second.stop_name}`, max_departures: 6 }, null, null, 500);
+    // Un capteur qui suit plusieurs lignes, comme le train « K8+/P8/K6+
+    // Orléans → Paris » : gtfs2 les publie dans lines, et chaque départ dit
+    // la sienne dans next_departures_lines. En vue Lignes, un carré par
+    // ligne en tête, et sur chaque départ le badge de sa propre ligne.
+    const codes = ["K8+", "P8", "K6+"];
+    const legM = sensor("tram-a", { suffix: "ml", attributes: {
+      friendly_name: "sncf K8+/P8/K6+ Orléans → Paris Austerlitz", lines: codes,
+      // les couleurs de routes.txt, une par ligne : Rémi Express violet, P8 vert
+      line_colors: { "K8+": "6E1E78", "P8": "006600", "K6+": "6E1E78" },
+      ...{ origin_station_stop_id: ind.stop_id, origin_station_stop_name: ind.stop_name,
+           destination_station_stop_id: gaulle.stop_id, destination_station_stop_name: gaulle.stop_name } } });
+    const atM = states[legM].attributes;
+    atM.next_departures_lines = atM.next_departures.map((t, i) => `${t} (${codes[[0, 1, 0, 2, 1, 0][i % 6]]}/Paris - Orléans)`);
+    atM.route_route_short_name = codes[0];
+    card({ lines: [legM, legB], title: "Lines riding one sensor", max_departures: 6 }, null, null, 500);
+    // le même capteur dans un trajet : une plaque par ligne sur le choix
+    card({ lines: [legM, legB], trips: [["L'Indien", "Halmagrand"], ["L'Indien", "De Gaulle"]],
+           title: "Lines riding one sensor, in trips", max_departures: 4 }, null, null, 500);
   } else if (page === "boarding") {
     // Les règles de montée et de descente du fichier de tronçon : un trajet
     // pris à Victor Hugo et quitté à Royale-Châtelet sur le tram A, dont

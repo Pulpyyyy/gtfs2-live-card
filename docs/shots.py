@@ -58,6 +58,7 @@ PAGES = {
     "destinations": (470, 900), # the header: three departures, the arrival from one, ways to leave, a forced colour
     "struck":     (470, 1100),  # a cancelled run, one not stopping, alerts on their rows; a skipped stop on a timeline
     "boarding":   (540, 900),   # runs that take nobody on or set nobody down where the journey needs them
+    "multi":      (540, 900),   # a train sensor gathering two stations at its start: boarded at each
     "board":      (680, 470),   # the departures pane as a table (Lines view)
     "popup":      (520, 640),   # one vehicle tracked, its bubble open
     "editor":     (460, 900),   # the visual editor, sections open

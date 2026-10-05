@@ -201,6 +201,28 @@ const planTrips = (trips, rides, placeOf, maxChanges = MAX_CHANGES) => {
     return out;
 };
 
+// The ways found, and each stretch of them up to a place they change at:
+// the train to Paris Austerlitz on the way to Mairie de Montrouge goes to
+// Austerlitz too, an arrival of its own without a trip saying so. A
+// stretch is cut (see _destKeeps): its runs are the way's own, shown when
+// its arrival is picked, never beside the way. One that a way already is
+// is not added twice.
+const withStretches = (planned) => {
+    const sigOf = (legs) => legs.map((l) => `${l.entity}|${l.getOn}|${l.getOff}`).join(">");
+    const seen = new Set(planned.map((j) => sigOf(j.legs)));
+    const out = [...planned];
+    for (const j of planned) {
+        for (let k = 1; k < j.legs.length; k++) {
+            const legs = j.legs.slice(0, k);
+            const sig = sigOf(legs);
+            if (seen.has(sig)) continue;
+            seen.add(sig);
+            out.push({ name: null, legs, destColor: null, planned: true, cut: true });
+        }
+    }
+    return out;
+};
+
 // A name as the header reads it: the place of `places` that holds it, else
 // its own placeKey. {key, name}
 const placeResolver = (places) => {
@@ -269,6 +291,14 @@ const findStopIdx = (stops, seq, id, name, from) => {
 // outbound journey and its return are matched on - the names of their ends,
 // never their stop ids, which a station keeps one per platform.
 // "MAX Blue Line" -> "MBL": the first letter or digit of each word, three at most
+// the line of one departure as gtfs2 lists it beside its time, "<time>
+// (<short>/<long>)": its short name, or null when it has none
+const lineCodeOf = (v) => {
+    const m = /\(([^/()]*)\//.exec(String(v ?? ""));
+    const code = m ? m[1].trim() : "";
+    return code && code !== "None" ? code : null;
+};
+
 const initialsOf = (name) => String(name).split(/[\s/-]+/)
     .map((w) => (w.match(/[\p{L}\p{N}]/u) || [""])[0]).join("").slice(0, 3).toUpperCase();
 
@@ -797,7 +827,7 @@ const lighten = (hex, f) => {
 const inkOn = (hex) => (/^#[0-9a-fA-F]{6}$/.test(hex || "") && luminance(hex) > 0.62 ? "#1b1b1b" : "#ffffff");
 
 // Drain a colour of its chroma while holding its lightness, for a line whose
-// source has gone quiet. Veiling it towards the card background was the first
+// sensor is out of service: gone from Home Assistant, or unavailable. Veiling it towards the card background was the first
 // attempt and it broke the badge: on TAO's grey line the number fell to 1.3:1,
 // unreadable, because lightening a dark colour under white ink destroys the
 // contrast the ink was chosen for. Taking the saturation out instead leaves
@@ -1282,6 +1312,7 @@ class Gtfs2LiveCard extends HTMLElement {
         const lightenRepeats = !tripsOf(this._rawConfig).length && !this._destEntries().length;
         const colorUse = new Map();
         let fallbacks = 0;
+        const fallbackOf = new Map();
         for (const d of defs) {
             const at = d.entity && this._hass ? this._hass.states?.[d.entity]?.attributes : null;
             const cached = d.entity ? this._emeta.get(d.entity) : null;
@@ -1309,6 +1340,38 @@ class Gtfs2LiveCard extends HTMLElement {
                 if (mdi) patch.icon = mdi;
                 if (Object.keys(patch).length) this._remember(d.entity, patch);
             }
+            // a train sensor riding several lines (K8+, P8 and K6+ from
+            // Orléans to Paris) says them all: the lines its entry holds
+            // to, else those its departures ride. Its short name is only
+            // its next departure's. The header gives each its own square;
+            // the text names them together. A label set in the card wins
+            d.codes = null;
+            if (d.label == null && d.entity) {
+                const held = Array.isArray(at?.lines) && at.lines.length ? at.lines
+                    : Array.isArray(at?.next_departures_lines) ? at.next_departures_lines.map(lineCodeOf) : null;
+                const codes = held ? [...new Set(held.map((v) => (v == null ? "" : String(v).trim())).filter(Boolean))] : cached?.codes;
+                if (held) this._remember(d.entity, { codes });
+                if (codes?.length > 1) {
+                    d.codes = codes;
+                    d.label = codes.join("/");
+                }
+            }
+            // each of those lines in its own colour (SNCF: K8+ and K6+
+            // purple, P8 green), where the sensor's is only its next
+            // departure's: the colours gtfs2 lists per line, else the ones
+            // seen on the sensor's next departure as it changes, kept
+            const seen = { ...(cached?.codeColors || {}) };
+            if (short != null && short !== "" && rc) seen[String(short)] = rc;
+            const told = at?.line_colors && typeof at.line_colors === "object" ? at.line_colors : {};
+            for (const [code, v] of Object.entries(told)) {
+                const col = v ? String(v).replace(/^#?/, "#") : null;
+                if (col && /^#[0-9a-fA-F]{6}$/.test(col) && luminance(col) <= 0.82) seen[code] = col;
+            }
+            if (d.entity && JSON.stringify(seen) !== JSON.stringify(cached?.codeColors || {})) this._remember(d.entity, { codeColors: seen });
+            d.codeColors = d.codes ? new Map(d.codes.filter((k) => seen[k]).map((k) => [k, seen[k]])) : null;
+            // the sensor's own colour, which its shape and its legs wear: its
+            // first line's, never one that changes with each departure
+            if (!d.color && d.codeColors?.has(d.codes[0])) d.color = d.codeColors.get(d.codes[0]);
             if (d.label == null && short != null && short !== "") d.label = String(short);
             // a feed may name a line only in full (TriMet: "MAX Blue Line",
             // no short name): its initials stand in, "MBL"
@@ -1321,7 +1384,16 @@ class Gtfs2LiveCard extends HTMLElement {
                 } else if (c.line_color && c.line_color !== DEFAULTS.line_color) {
                     d.color = c.line_color;
                 } else {
-                    d.color = FALLBACK_COLORS[fallbacks++ % FALLBACK_COLORS.length];
+                    // a feed giving no colour (SNCF) gets one of ours per
+                    // line, not per sensor: its two directions, and the
+                    // trains a sensor gathers whatever order it lists them
+                    // in, share it, repeated as a route_color would be
+                    const key = d.codes ? [...d.codes].sort().join("|") : d.label != null ? `l:${d.label}` : `i:${d.idx}`;
+                    if (!fallbackOf.has(key)) fallbackOf.set(key, FALLBACK_COLORS[fallbacks++ % FALLBACK_COLORS.length]);
+                    const own = fallbackOf.get(key);
+                    const n = colorUse.get(own) || 0;
+                    colorUse.set(own, n + 1);
+                    d.color = n === 0 || !lightenRepeats ? own : lighten(own, 0.35 * n);
                 }
             }
         }
@@ -1339,6 +1411,29 @@ class Gtfs2LiveCard extends HTMLElement {
             if (f) this._bFamily = f;
         } catch (e) { /* rendu hors document */ }
         return this._bFamily || "Roboto, sans-serif";
+    }
+
+    // the badge of one departure: its own line on a sensor that mixes
+    // several, the sensor's otherwise
+    // and its colour: its own line's where the feed gives one
+    _rowColor(row, def = row?.def) {
+        return this._lineColorOf(def, row?.line);
+    }
+
+    _rowLabel(row, def = row?.def) {
+        return row?.line || this._lineLabelOf(def);
+    }
+
+    // the labels a line's squares and plates show: one per line a sensor
+    // riding several of them names, else its own
+    _lineLabelsOf(def) {
+        return def.codes || [this._lineLabelOf(def)];
+    }
+
+    // the colour of one of a sensor's lines, its own where the feed gives
+    // it (K8+ purple, P8 green on one SNCF sensor), else the sensor's
+    _lineColorOf(def, code) {
+        return (code && def?.codeColors?.get(code)) || def?.color;
     }
 
     _lineLabelOf(def) {
@@ -1980,8 +2075,22 @@ class Gtfs2LiveCard extends HTMLElement {
                 const s = this._badgeState(d);
                 const sel = this._hiLine === d.idx;
                 const dim = this._hiLine != null && !sel;
-                const a11y = many ? ` data-action="line" data-li="${d.idx}" data-fk="line:${d.idx}" role="button" tabindex="0" aria-pressed="${sel}"` : "";
-                return `<div class="badge ${many ? "clickable" : ""} ${sel ? "sel" : ""} ${dim ? "dim" : ""} ${s.resting ? "resting" : ""} ${s.mute ? "mute" : ""}" style="background:${esc(s.bg)};color:${s.bink};--chip-bg:${s.chipBg};--opp-ink:${s.opp}${s.bfs !== BADGE_FS ? `;font-size:${s.bfs}px` : ""}"${a11y} title="${esc(s.btitle)}"${s.btitle ? ` data-tip="${esc(s.btitle)}"` : ""}><span class="badge-num">${esc(s.blabel)}</span>${s.restSr}${s.chip}${s.mutePip}${s.alertPip}${s.rest}</div>`;
+                // a sensor riding several lines gets a square per line, each
+                // picking the whole sensor; the first carries its marks, the
+                // others their mode and the stroke of a line at rest
+                const labels = d.codes || [s.blabel];
+                return labels.map((label, k) => {
+                    const a11y = many ? ` data-action="line" data-li="${d.idx}" data-fk="line:${d.idx}${k ? `:${k}` : ""}" role="button" tabindex="0" aria-pressed="${sel}"` : "";
+                    const bfs = d.codes ? badgeFontSize(label, this._badgeFamily()) : s.bfs;
+                    const marks = k ? s.chip + s.slash : s.restSr + s.chip + s.mutePip + s.alertPip + s.rest;
+                    // each line its own colour, drained like the sensor's when it is out of service
+                    const own = d.codes ? d.codeColors?.get(label) : null;
+                    const bg = own ? (s.hs ? drain(own) : own) : s.bg;
+                    const bink = own ? inkOn(bg) : s.bink;
+                    const chipBg = own ? `color-mix(in srgb, ${bink === "#ffffff" ? "#000" : "#fff"} 40%, ${esc(bg)})` : s.chipBg;
+                    const opp = own ? (bink === "#ffffff" ? "#1b1b1b" : "#ffffff") : s.opp;
+                    return `<div class="badge ${many ? "clickable" : ""} ${sel ? "sel" : ""} ${dim ? "dim" : ""} ${s.resting ? "resting" : ""} ${s.mute ? "mute" : ""}" style="background:${esc(bg)};color:${bink};--chip-bg:${chipBg};--opp-ink:${opp}${bfs !== BADGE_FS ? `;font-size:${bfs}px` : ""}"${a11y} title="${esc(s.btitle)}"${s.btitle ? ` data-tip="${esc(s.btitle)}"` : ""}><span class="badge-num">${esc(label)}</span>${marks}</div>`;
+                }).join("");
             })
             .join("");
         // the line picked, named under its badges rather than beside them:
@@ -1997,9 +2106,9 @@ class Gtfs2LiveCard extends HTMLElement {
     }
 
     // Everything a line's badge says, worked out once for its own badge and
-    // for its half of a journey's double badge: the colour (drained when
-    // its source has gone quiet) and the ink on it, the mode glyph, the
-    // operator's alert, the rest - and the sentence of the tooltip.
+    // for its half of a journey's double badge: the colour and the ink on
+    // it, the mode glyph, the operator's alert, the rest - and the
+    // sentence of the tooltip.
     _badgeState(d) {
         const bdest = d.entity ? (this._hass?.states?.[d.entity]?.attributes?.destination_station_stop_name || "") : "";
         // same table as the map markers: a mode draws the identical
@@ -2069,6 +2178,8 @@ class Gtfs2LiveCard extends HTMLElement {
         const frozen = !!d.positions_url && !!slot && !resting
             && (slot.sigAt ? Date.now() - slot.sigAt > STALE_FEED : !!slot.err);
         const mute = gone || down || frozen;
+        // out of service: nothing it shows is current any more
+        const hs = gone || down;
         const muteTitle = !mute ? ""
             : gone ? this._t("mute_gone")
             : down ? this._t("mute_unavailable")
@@ -2128,10 +2239,12 @@ class Gtfs2LiveCard extends HTMLElement {
         }
         // the label reads against its own line colour, the same rule
         // the map markers follow: a light line colour takes dark text
-        // a quiet line keeps its lightness and loses its chroma, so the
-        // ink rule below still holds and the number stays readable
-        const bg = mute ? drain(d.color || this._config.line_color)
-                        : (d.color || this._config.line_color);
+        // A sensor out of service (gone, unavailable) drains its line of its
+        // chroma, its lightness kept so the ink rule below still holds:
+        // nothing the badge says is current. One whose positions file alone
+        // has gone quiet keeps its colour - its timetable still stands, and
+        // greyed, three lines of one operator read as one - its pip says it
+        const bg = hs ? drain(d.color || this._config.line_color) : (d.color || this._config.line_color);
         const bink = inkOn(bg);
         // the mode chip's disc goes the other way round from the ink,
         // so the glyph keeps its contrast on light and dark lines alike
@@ -2153,7 +2266,7 @@ class Gtfs2LiveCard extends HTMLElement {
         // no corner there, the stroke on its half says it
         const slash = resting ? rest.slice(0, rest.indexOf('<span class="badge-pip svc')) : "";
         const alertGlyph = alert ? alertPip.replace(/^<span class="badge-pip alert tr">/, "").replace(/<\/span>$/, "") : "";
-        return { bg, bink, chipBg, opp, mute, muteTitle, resting, restTitle, btitle, restSr, blabel, bfs, chip, chipInner, mutePip, alertPip, alertGlyph, rest, slash, bdest };
+        return { bg, bink, chipBg, opp, mute, hs, muteTitle, resting, restTitle, btitle, restSr, blabel, bfs, chip, chipInner, mutePip, alertPip, alertGlyph, rest, slash, bdest };
     }
 
     /* ── The destination header ──────────────────────────────────────────
@@ -2182,7 +2295,7 @@ class Gtfs2LiveCard extends HTMLElement {
         const sig = `${gen}:` + rides.map((r) => `${r.entity}=${r.stops.map((st) => `${st.key}${st.board ? "" : "-"}${st.alight ? "" : "_"}`).join(",")}`).join("/");
         if (m && m.raw === raw && m.sig === sig) { m.hass = this._hass; m.gen = gen; return m.list; }
         const max = Number.isFinite(Number(raw.max_changes)) ? Math.max(0, Number(raw.max_changes)) : MAX_CHANGES;
-        const planned = planTrips(tripsOf(raw), rides, placeResolver(raw.places), max);
+        const planned = withStretches(planTrips(tripsOf(raw), rides, placeResolver(raw.places), max));
         this._jCache = { raw, trips: true, sig, gen, hass: this._hass, list: journeysOf(raw, planned) };
         return this._jCache.list;
     }
@@ -2539,20 +2652,24 @@ class Gtfs2LiveCard extends HTMLElement {
             // two sensors of one line, a direction each, are one plate
             const plateKey = (d) => `${this._lineLabelOf(d)}|${d.color}`;
             const plateLines = shownLines.filter((d, i) => shownLines.findIndex((x) => plateKey(x) === plateKey(d)) === i);
+            // a sensor riding several lines is a plate per line, as on its
+            // badges: each sensor's first, in riding order, then its others,
+            // so that what the "+n" hides is another line of a leg already
+            // shown, never a leg
+            const plateOnes = [0, 1].flatMap((pass) => plateLines.flatMap((d) => this._lineLabelsOf(d)
+                .filter((_, k) => (pass ? k > 0 : k === 0)).map((label) => ({ d, label }))));
             const plates = (lit) => {
-                const keep = plateLines.slice(0, DEST_PLATES);
-                const rest = plateLines.length - keep.length;
+                const keep = plateOnes.slice(0, DEST_PLATES);
+                const rest = plateOnes.length - keep.length;
                 if (!keep.length) return "";
-                const one = (d) => {
+                const one = ({ d, label }) => {
                     // destination_color named this place, and the medallion it
                     // used to paint is gone: it paints the plates instead. It
                     // costs the per line colours on that chip, which is the
                     // user asking for it - the numbers still tell them apart.
-                    // A quiet source drains its plate as it drained the badge:
-                    // its lightness kept, its chroma gone.
-                    const own = color || d.color;
-                    const col = !lit ? null : (this._badgeState(d).mute ? drain(own) : own);
-                    const label = this._lineLabelOf(d);
+                    // a sensor out of service drains its plate as it drains its badge
+                    const own = color || this._lineColorOf(d, label);
+                    const col = !lit ? null : (this._badgeState(d).hs ? drain(own) : own);
                     const style = col ? ` style="background:${esc(col)};color:${inkOn(col)}"` : "";
                     // mode_icons: false drops the band, not the plate: the
                     // option is about mode glyphs, and the number is the point
@@ -2669,8 +2786,8 @@ class Gtfs2LiveCard extends HTMLElement {
                 const labels = lds.map((d) => this._lineLabelOf(d));
                 const label = direct ? this._t("way_direct")
                     : this._t(v.group.wayAt === "first" ? "way_via" : "way_then", { l: labels[0] || "" });
-                const plates = lds.map((d) => `<span class="dplate" style="background:${esc(d.color)};color:${inkOn(d.color)}">`
-                    + `<span class="n">${esc(this._lineLabelOf(d))}</span><span class="band">${svg(d.mode || "bus", 13)}</span></span>`).join("");
+                const plates = lds.flatMap((d) => this._lineLabelsOf(d).map((l) => `<span class="dplate" style="background:${esc(this._lineColorOf(d, l))};color:${inkOn(this._lineColorOf(d, l))}">`
+                    + `<span class="n">${esc(l)}</span><span class="band">${svg(d.mode || "bus", 13)}</span></span>`)).join("");
                 const first = runs[0];
                 const tag = first ? dayTag(lang, first.dep, now) : "";
                 const clock = first ? `${tag ? tag + " " : ""}${fmtHM(first.dep)}` : "";
@@ -2820,6 +2937,17 @@ class Gtfs2LiveCard extends HTMLElement {
         // what rides each departure, when the sensor says: gtfs2 marks a
         // coach listed by a train line 714, a rail replacement bus
         const typesRaw = Array.isArray(a.next_departures_route_types) ? a.next_departures_route_types : [];
+        // where each departure leaves the sensor from: one place on most
+        // sensors, one of the stations of a train sensor that gathers
+        // several at its start (Orléans and Les Aubrais to Paris)
+        const oidsRaw = Array.isArray(a.next_departures_origin_stop_id) ? a.next_departures_origin_stop_id : [];
+        // the line each departure rides, "<time> (<short>/<long>)" beside
+        // each: a train sensor may gather several (K8+, K6+ and P8 from
+        // Orléans to Paris), and the badge the sensor wears is its next
+        // train's. Kept only where the list mixes lines: a sensor of one
+        // line keeps its own badge, a configured label first
+        const linesRaw = (Array.isArray(a.next_departures_lines) ? a.next_departures_lines : []).map(lineCodeOf);
+        const mixed = new Set(linesRaw.filter(Boolean)).size > 1;
         const theoAll = theoRaw.map((v, j) => {
             const t = parseTs(v);
             if (!t) return null;
@@ -2829,7 +2957,8 @@ class Gtfs2LiveCard extends HTMLElement {
                 if (arr) dur = Math.round((arr.getTime() - t.getTime()) / 60000);
             }
             return { t, dur, tripId: tripsRaw[j] != null ? String(tripsRaw[j]) : null,
-                rtype: typesRaw[j] != null ? typesRaw[j] : null };
+                rtype: typesRaw[j] != null ? typesRaw[j] : null, oid: oidsRaw[j] != null ? String(oidsRaw[j]) : null,
+                line: mixed ? linesRaw[j] || null : null };
         }).filter(Boolean);
         // a feed gone quiet leaves its last predictions behind: past
         // RT_STALE they are not live any more, and the schedule stands in
@@ -2868,10 +2997,11 @@ class Gtfs2LiveCard extends HTMLElement {
                 : (rawDelay != null ? Math.round(rawDelay / 60) : null);
             rows.push({ time: t, theo: theoT, rt: true, delayMin, durMin: theoT ? theoAll[best].dur : null,
                 tripId: theoT ? theoAll[best].tripId : tid,
-                rtype: theoT ? theoAll[best].rtype : null, def: src.def });
+                rtype: theoT ? theoAll[best].rtype : null, oid: theoT ? theoAll[best].oid : null,
+                line: theoT ? theoAll[best].line : null, def: src.def });
         });
         theoAll.forEach((x, j) => {
-            if (!usedTheo.has(j)) rows.push({ time: x.t, theo: null, rt: false, delayMin: null, durMin: x.dur, tripId: x.tripId, rtype: x.rtype, def: src.def });
+            if (!usedTheo.has(j)) rows.push({ time: x.t, theo: null, rt: false, delayMin: null, durMin: x.dur, tripId: x.tripId, rtype: x.rtype, oid: x.oid, line: x.line, def: src.def });
         });
         // The runs the sensor lists, remembered while they are ahead. A run
         // the feed strikes out leaves the sensor's lists at once (gtfs2
@@ -2889,7 +3019,7 @@ class Gtfs2LiveCard extends HTMLElement {
             if (!x.tripId) continue;
             const key = `${ent}|${x.tripId}|${x.t.getTime()}`;
             listed.add(key);
-            if (!this._seenRows.has(key)) this._seenRows.set(key, { t: x.t, dur: x.dur, rtype: x.rtype, tripId: x.tripId });
+            if (!this._seenRows.has(key)) this._seenRows.set(key, { t: x.t, dur: x.dur, rtype: x.rtype, tripId: x.tripId, oid: x.oid, line: x.line });
         }
         const struckOf = (ids, kind) => {
             const want = new Set((Array.isArray(ids) ? ids : []).map(String));
@@ -2897,7 +3027,7 @@ class Gtfs2LiveCard extends HTMLElement {
             for (const [key, m] of this._seenRows) {
                 // still listed: the feed struck it on another day
                 if (!key.startsWith(ent + "|") || !want.has(m.tripId) || listed.has(key)) continue;
-                rows.push({ time: m.t, theo: m.t, rt: true, delayMin: null, durMin: m.dur, tripId: m.tripId, rtype: m.rtype, def: src.def, struck: kind });
+                rows.push({ time: m.t, theo: m.t, rt: true, delayMin: null, durMin: m.dur, tripId: m.tripId, rtype: m.rtype, oid: m.oid, line: m.line, def: src.def, struck: kind });
             }
         };
         struckOf(a.cancelled_trips_realtime, "cancelled");
@@ -2949,6 +3079,14 @@ class Gtfs2LiveCard extends HTMLElement {
         const at = st?.attributes || {};
         const meta = this._emeta.get(def.entity) || {};
         const idOf = (v) => (v == null ? "" : String(v).split(": ")[0]);
+        // a train sensor may gather several stations at an end, the rider
+        // getting on at the first a train calls at (Orléans and Les
+        // Aubrais to Paris): gtfs2 lists them by name, a station having many
+        // stop records. The origin it names otherwise is the NEXT
+        // departure's only
+        const stations = (v, kept) => (Array.isArray(v) ? v.map(String).filter(Boolean) : kept || []);
+        const ostations = stations(at.origin_stations, meta.ostations);
+        const dstations = stations(at.destination_stations, meta.dstations);
         const ends = {
             oid: idOf(at.origin_station_stop_id) || meta.origin || "",
             oname: at.origin_station_stop_name ?? meta.oname ?? "",
@@ -2964,17 +3102,39 @@ class Gtfs2LiveCard extends HTMLElement {
             if (ends.oname) patch.oname = ends.oname;
             if (ends.did) patch.dest = ends.did;
             if (ends.dname) patch.dname = ends.dname;
+            if (Array.isArray(at.origin_stations)) patch.ostations = ostations;
+            if (Array.isArray(at.destination_stations)) patch.dstations = dstations;
             this._remember(def.entity, patch);
         }
-        if (!route?.stops?.length) return { route: null, oi: null, di: null, oFound: false, dFound: false, ...ends };
+        const oMulti = ostations.length > 1, dMulti = dstations.length > 1;
+        // there the leg's end is the station listed first - the entry's own,
+        // the others being where it also boards or alights - and on the
+        // shape the first of them a run reaches, or the last: never the
+        // next departure's, which the trips planner would take for the
+        // sensor's start and board every run at
+        if (oMulti) Object.assign(ends, { oid: "", oname: ostations[0], oseq: null });
+        if (dMulti) Object.assign(ends, { did: "", dname: dstations[0], dseq: null });
+        if (!route?.stops?.length) return { route: null, oi: null, di: null, oFound: false, dFound: false, oMulti, dMulti, ...ends };
         const stops = route.stops;
-        let oi = findStopIdx(stops, ends.oseq, ends.oid, ends.oname, 0);
+        // where each listed station is on the shape, from a given stop on
+        const placesOf = (list, from) => list.map((v) => findStopIdx(stops, null, null, v, from)).filter((i) => i >= 0);
+        let oi;
+        if (oMulti) {
+            const at0 = placesOf(ostations, 0);
+            oi = at0.length ? Math.min(...at0) : -1;
+        } else oi = findStopIdx(stops, ends.oseq, ends.oid, ends.oname, 0);
         const oFound = oi >= 0;
         if (oi < 0) oi = 0;
-        let di = findStopIdx(stops, ends.dseq, ends.did, ends.dname, oi + 1);
+        let di;
+        if (dMulti) {
+            const at1 = placesOf(dstations, oi + 1);
+            di = at1.length ? Math.max(...at1) : -1;
+        } else di = findStopIdx(stops, ends.dseq, ends.did, ends.dname, oi + 1);
         const dFound = di >= 0;
         if (di < 0) di = stops.length - 1;
-        return { route, oi, di, oFound, dFound, ...ends };
+        if (oMulti && oFound) Object.assign(ends, { oid: stops[oi].id || "", oname: stops[oi].name || ends.oname });
+        if (dMulti && dFound) Object.assign(ends, { did: stops[di].id || "", dname: stops[di].name || ends.dname });
+        return { route, oi, di, oFound, dFound, oMulti, dMulti, ...ends };
     }
 
     // One journey resolved against the lines and the shapes read so far:
@@ -3242,8 +3402,11 @@ class Gtfs2LiveCard extends HTMLElement {
         const widened = new Set();
         const out = [];
         const l0 = plan.legs[0];
-        const atOrigin = l0.si === l0.slice.oi;
         for (const r0 of rowsOf[0]) {
+            // boarded where the run leaves the sensor from: the sensor's
+            // time is the rider's. Elsewhere - a get_on, or another station
+            // of a sensor gathering several - the run is timed there
+            const atOrigin = l0.si === this._rowStart(l0, r0);
             // a run the feed struck out is said on the board when the
             // journey boards it at the sensor's origin, the one place its
             // time is known; it is never chained
@@ -3305,7 +3468,6 @@ class Gtfs2LiveCard extends HTMLElement {
                 }
                 // the run is picked by when it reaches the stop the leg is
                 // boarded at: the sensor's origin, or its get_on
-                const atO = leg.si === leg.slice.oi;
                 // gone: a run left out as past before it was timed, which
                 // says nothing of whether it calls at the stop
                 let ride = null, served = false, unserved = null, gone = false;
@@ -3320,7 +3482,7 @@ class Gtfs2LiveCard extends HTMLElement {
                     if (ride && row.time.getTime() >= ride.dep.getTime()) break;
                     if (row.time.getTime() + (Number.isFinite(row.durMin) ? row.durMin : 240) * 60000 < earliest) { gone = true; continue; }
                     const cand = { leg, row };
-                    const tb = atO ? { t: row.time, rt: !!row.rt } : this._rideTime(leg.board, cand);
+                    const tb = leg.si === this._rowStart(leg, row) ? { t: row.time, rt: !!row.rt } : this._rideTime(leg.board, cand);
                     if (tb?.t) served = true; else if (tb?.unserved) unserved = unserved || tb;
                     if (!tb?.t || tb.t.getTime() < earliest || (ride && tb.t >= ride.dep)) continue;
                     ride = Object.assign(cand, { dep: tb.t, depRt: !!tb.rt });
@@ -3344,6 +3506,14 @@ class Gtfs2LiveCard extends HTMLElement {
             }
             if (broken) continue;
             const last = rides[rides.length - 1];
+            // a run whose timetable never calls where the journey ends is no
+            // run to it (a K6+ to Tours, through Les Aubrais, on a trip to
+            // Orléans). One calling there with its door shut, or that the
+            // feed says skips it today, is listed without an arrival, saying so
+            if (!last.arr) {
+                const e = this._rideTime(last.leg.end, last);
+                if (e?.unserved && !e.noAlight && !e.skipped) continue;
+            }
             // the status of the run is the one of its arrival: the delay
             // there when the feed times it, else the worst delay of a leg
             // ridden, so a late tram is never hidden behind an on-time bus -
@@ -3482,13 +3652,32 @@ class Gtfs2LiveCard extends HTMLElement {
     // journey boards or leaves it (noBoard, noAlight); null when nothing
     // says. At the sensor's own ends the integration already lists only
     // the runs that open there.
+    // Where on its leg's shape a run leaves the sensor from: the leg's
+    // origin, except on a sensor gathering several stations at its start,
+    // where each departure says which (a train from Les Aubrais never calls
+    // at Orléans). -1 when that station is not on the shape.
+    _rowStart(leg, row) {
+        const s = leg.slice;
+        if (!s.oMulti || !row?.oid || !s.route) return s.oi;
+        const name = this._ld[leg.def.idx]?.leg?.names.get(row.oid);
+        const i = findStopIdx(s.route.stops, null, row.oid, name, 0);
+        if (i >= 0) return i;
+        // a station has a record per kind of train (SNCF: OCETrain TER-,
+        // OCEINTERCITES-, OCECar ... then the same UIC code): one of them
+        // drew the shape, another may be the departure's
+        const uic = /(\d{6,})$/.exec(row.oid)?.[1];
+        return uic ? s.route.stops.findIndex((x) => String(x.id || "").endsWith(uic)) : -1;
+    }
+
     _rideTime(p, ride) {
         if (!ride || !p) return null;
         const s = ride.leg.slice;
         const row = ride.row;
         // the schedule the time is measured against, when the sensor has it
         const sch0 = row.rt ? row.theo : row.time;
-        if (p.at != null && p.at === s.oi && s.oFound) return { t: row.time, rt: !!row.rt, sch: sch0 };
+        // the sensor's own time is the run's where it leaves the sensor from
+        const from = this._rowStart(ride.leg, row);
+        if (p.at != null && p.at === from && (from !== s.oi || s.oFound)) return { t: row.time, rt: !!row.rt, sch: sch0 };
         // what the rider does at this point: gets on at the start and at a
         // change's second half, gets off at the end and at its first half,
         // only passes a via
@@ -3517,11 +3706,16 @@ class Gtfs2LiveCard extends HTMLElement {
             if (!known && miss) return miss;
         }
         if (known) return known;
-        if (p.at != null && p.at === s.di && s.dFound && row.durMin != null) {
+        // a run is nowhere before the station it leaves the sensor from
+        if (s.oMulti && p.at != null && from >= 0 && p.at < from) return { unserved: true };
+        // the duration runs to the run's own end, which on a sensor
+        // gathering several stations there is not always the leg's last
+        if (p.at != null && p.at === s.di && s.dFound && !s.dMulti && row.durMin != null) {
             return { t: new Date(row.time.getTime() + row.durMin * 60000), rt: !!row.rt,
                 sch: sch0 ? new Date(sch0.getTime() + row.durMin * 60000) : null };
         }
-        const t0 = s.route?.stops[s.oi]?.time, t1 = p.stop?.time;
+        if (from < 0) return null;
+        const t0 = s.route?.stops[from]?.time, t1 = p.stop?.time;
         if (t0 == null || t1 == null) return null;
         return { t: new Date(row.time.getTime() + (t1 - t0) * 1000), rt: false, proxy: true };
     }
@@ -3737,6 +3931,10 @@ class Gtfs2LiveCard extends HTMLElement {
             return;
         }
         const { rows, multi } = this._departureRows();
+        // the line of each row: needed among several sensors, and on one
+        // sensor whose runs ride different lines (a train sensor on K8+, K6+
+        // and P8). The destinations stay a matter of several sensors
+        const lined = multi || rows.some((r) => r.line);
         // an alert naming every run of its line on the board singles none
         // out: the strip under the board says it, the rows carry no mark.
         // One naming some of them marks those, and the marks say which
@@ -3755,7 +3953,7 @@ class Gtfs2LiveCard extends HTMLElement {
         const nextRow = rows.find((r) => !r.struck);
 
         if (this._collapsed.dep) {
-            const nextLine = multi && nextRow?.def ? ` <span class="mini-badge" style="background:${esc(nextRow.def.color)};color:${inkOn(nextRow.def.color)}">${esc(this._lineLabelOf(nextRow.def))}</span>` : "";
+            const nextLine = lined && nextRow?.def ? ` <span class="mini-badge" style="background:${esc(this._rowColor(nextRow))};color:${inkOn(this._rowColor(nextRow))}">${esc(this._rowLabel(nextRow))}</span>` : "";
             const nextDay = nextRow ? dayTag(lang, nextRow.time, now) : "";
             const summary = nextRow
                 ? `${this._t("next")}${nextLine} <b>${nextDay ? esc(nextDay) + " " : ""}${fmtHM(nextRow.time)}</b>${nextRow.rt && nextRow.delayMin ? ` · ${nextRow.delayMin > 0 ? "+" : ""}${nextRow.delayMin} min` : ""}`
@@ -3798,8 +3996,8 @@ class Gtfs2LiveCard extends HTMLElement {
             if (rv.length) bits.push(`<span class="sub vias">${this._viasHtml(rv)}</span>`);
             const subLine = bits.length ? `<span class="sub-line">${bits.join("")}</span>` : "";
             const chip = this._statusChip(r.rt, r.delayMin, r.struck);
-            const badge = multi && r.def
-                ? `<span class="row-badge" style="background:${esc(r.def.color)};color:${inkOn(r.def.color)}">${esc(this._lineLabelOf(r.def))}</span>`
+            const badge = lined && r.def
+                ? `<span class="row-badge" style="background:${esc(this._rowColor(r))};color:${inkOn(this._rowColor(r))}">${esc(this._rowLabel(r))}</span>`
                 : "";
             const destSub = multi && r.def
                 ? this._hass?.states?.[r.def.entity]?.attributes?.destination_station_stop_name || ""
@@ -3914,7 +4112,8 @@ class Gtfs2LiveCard extends HTMLElement {
     // says which under its head: a lone line's badge, the journey's title.
     _journeyRowsHtml(runs, lang, now, open, labelled) {
         const clockOf = (when) => this._clockHtml(when);
-        const badgeOf = (leg) => `<span class="mini-badge" style="background:${esc(leg.def.color)};color:${inkOn(leg.def.color)}">${esc(this._lineLabelOf(leg.def))}</span>`;
+        // a leg's badge, the run's own line when its sensor mixes several
+        const badgeOf = (leg, row) => `<span class="mini-badge" style="background:${esc(this._rowColor(row, leg.def))};color:${inkOn(this._rowColor(row, leg.def))}">${esc(this._rowLabel(row, leg.def))}</span>`;
         const openable = (plan) => plan.legs.length > 1 || plan.points.length > 2;
         // a row with nothing to open keeps the chevron's room when others
         // have one, so the countdowns line up
@@ -3932,9 +4131,9 @@ class Gtfs2LiveCard extends HTMLElement {
             const r0 = j.rides[0].row;
             const canOpen = openable(plan) && !j.struck;
             const isOpen = canOpen && j.key === open;
-            // the moved schedule is the sensor's, at its origin: said only
-            // when the journey is boarded there
-            const strike = plan.legs[0].si === plan.legs[0].slice.oi && r0.rt && r0.theo && Math.abs(r0.time - r0.theo) >= 60000;
+            // the moved schedule is the sensor's, where the run leaves it
+            // from: said only when the journey is boarded there
+            const strike = plan.legs[0].si === this._rowStart(plan.legs[0], r0) && r0.rt && r0.theo && Math.abs(r0.time - r0.theo) >= 60000;
             const chip = !j.rt && !mixedRt ? "" : this._statusChip(j.rt, j.delay, j.struck);
             // a day said once, over the first run it applies to
             const tag = dayTag(lang, j.dep, now);
@@ -3958,7 +4157,7 @@ class Gtfs2LiveCard extends HTMLElement {
                     const color = esc(leg.def.color);
                     pts.forEach((q, i) => {
                         const cls = (i === 0 ? " first" : "") + (i === pts.length - 1 ? " last" : "");
-                        body += `<span class="jl">${i === 0 ? badgeOf(leg) : ""}</span>`
+                        body += `<span class="jl">${i === 0 ? badgeOf(leg, ride.row) : ""}</span>`
                             + `<span class="jnode${cls}" style="--lc:${color}"><span class="jnum">${q.n}</span></span>`
                             + `<span class="jname">${this._alertMarkHtml(this._stopAlertsAt(li, q.name))}${esc(q.name)}</span><span class="jclock">${q.clock}</span>`;
                     });
@@ -3979,7 +4178,7 @@ class Gtfs2LiveCard extends HTMLElement {
                         segs.push(`<span class="jchg" role="img" title="${say}" aria-label="${say}"><span>→</span>${ICONS.walk}<span>${ride.wait} min</span><span>→</span></span>`);
                     }
                     const end = ride.arr ? ` → ${clockOf(this._rideTime(ride.leg.end, ride))}` : "";
-                    segs.push(`<span class="jseg">${badgeOf(ride.leg)}${clockOf({ t: ride.dep, rt: ride.depRt })}${end}</span>`);
+                    segs.push(`<span class="jseg">${badgeOf(ride.leg, ride.row)}${clockOf({ t: ride.dep, rt: ride.depRt })}${end}</span>`);
                 }
                 body = `<div class="jsum">${segs.join("")}</div>`;
             }
@@ -3987,11 +4186,14 @@ class Gtfs2LiveCard extends HTMLElement {
             // which journey the row is: a lone line's badge and the journey's
             // title (a journey with a change names its lines in its body)
             const where = labelled
-                ? `<div class="jwhere">${plan.legs.length === 1 ? badgeOf(plan.legs[0]) : ""}<span class="jwt">${esc(j.sec.title)}</span></div>` : "";
+                ? `<div class="jwhere">${plan.legs.length === 1 ? badgeOf(plan.legs[0], j.rides[0]?.row) : ""}<span class="jwt">${esc(j.sec.title)}</span></div>` : "";
+            // unlabelled, a journey of one leg wears no badge: on a sensor
+            // that mixes lines, the run's own goes before its time
+            const runLine = !labelled && plan.legs.length === 1 && r0?.line ? `${badgeOf(plan.legs[0], r0)} ` : "";
             return sep + `
             <div class="row jrow${isOpen ? " open" : ""}${canOpen ? "" : " flat"}${j.struck ? " struck" : ""}"${act}>
                 <div class="jhead"${canOpen ? ` role="button" tabindex="0" aria-expanded="${isOpen}"${act}` : ""}>
-                    <span class="time${j.struck ? " struck" : ""}">${fmtHM(j.dep)}</span>
+                    ${runLine}<span class="time${j.struck ? " struck" : ""}">${fmtHM(j.dep)}</span>
                     ${j.depRt ? `<span class="rt-icon">${ICONS.live}</span>` : ""}
                     ${this._rowAlertHtml(r0)}
                     ${j.arr ? `<span class="jarrow">→</span><span class="time">${fmtHM(j.arr)}</span>${atag ? `<span class="day-tag">${esc(atag)}</span>` : ""}` : ""}
@@ -4035,9 +4237,10 @@ class Gtfs2LiveCard extends HTMLElement {
         // a destination column only when it tells rows apart
         const destOf = (r) => String((r.def?.entity && this._hass?.states?.[r.def.entity]?.attributes?.destination_station_stop_name) || "");
         const showDest = multi && new Set(rows.map(destOf).filter(Boolean)).size > 1;
+        const lined = multi || rows.some((r) => r.line);
         // a via column only when a line of the board has stops on the way
         const showVia = rows.some((r) => (vias.get(r.def?.idx) || []).length);
-        const ncol = 5 + (multi ? 1 : 0) + (showVia ? 1 : 0);
+        const ncol = 5 + (lined ? 1 : 0) + (showVia ? 1 : 0);
         let lastTag = "";
         const cells = rows.map((r) => {
             const tag = dayTag(lang, r.time, now);
@@ -4074,8 +4277,8 @@ class Gtfs2LiveCard extends HTMLElement {
                 const fast = r.durMin - b <= Math.max(2, b * 0.15);
                 dur = `<b${fast ? ` class="dur-ok"` : ""}>${fmtDur(r.durMin)}</b>`;
             }
-            const line = multi
-                ? `<td class="fit">${r.def ? `<span class="row-badge" style="background:${esc(r.def.color)};color:${inkOn(r.def.color)}">${esc(this._lineLabelOf(r.def))}</span>` : "—"}</td>`
+            const line = lined
+                ? `<td class="fit">${r.def ? `<span class="row-badge" style="background:${esc(this._rowColor(r))};color:${inkOn(this._rowColor(r))}">${esc(this._rowLabel(r))}</span>` : "—"}</td>`
                 : "";
             // the last column takes the slack: the destination, or nothing
             const last = showDest ? `<td class="dest-c">${esc(destOf(r)) || "—"}</td>` : `<td></td>`;
@@ -4087,7 +4290,7 @@ class Gtfs2LiveCard extends HTMLElement {
             // go and this row says them whole; wide, it is never shown
             const words = [showDest && destOf(r) ? `<span class="sub-dest">→ ${esc(destOf(r))}</span>` : "",
                 rv.length ? `<span class="sub-via">${this._t("col_via")} ${this._viasHtml(rv)}</span>` : ""].filter(Boolean);
-            const sub = words.length ? `<tr class="row-sub">${multi ? "<td></td>" : ""}<td colspan="${ncol - (multi ? 1 : 0)}">${words.join("")}</td></tr>` : "";
+            const sub = words.length ? `<tr class="row-sub">${lined ? "<td></td>" : ""}<td colspan="${ncol - (lined ? 1 : 0)}">${words.join("")}</td></tr>` : "";
             return sep + `<tr>${line}<td class="num dep fit" title="${esc(depTitle)}">${dep}</td><td class="dly-c fit">${dly}</td>${via}<td class="num fit">${arr}</td>`
                 + `<td class="num fit">${dur}</td>${last}</tr>` + sub;
         }).join("");
@@ -4097,7 +4300,7 @@ class Gtfs2LiveCard extends HTMLElement {
         })}</div>` : "";
         return summary
             + `<div class="board-wrap"><table class="board"><thead><tr>`
-            + (multi ? `<th class="fit">${this._t("col_line")}</th>` : "")
+            + (lined ? `<th class="fit">${this._t("col_line")}</th>` : "")
             + `<th class="num fit">${this._t("col_departure")}</th><th class="fit"></th>`
             + (showVia ? `<th class="fit vias">${this._t("col_via")}</th>` : "") + `<th class="num fit">${this._t("col_arrival")}</th>`
             + `<th class="num fit">${this._t("col_duration")}</th><th${showDest ? ` class="dest-c"` : ""}>${showDest ? this._t("col_destination") : ""}</th>`
@@ -4128,8 +4331,14 @@ class Gtfs2LiveCard extends HTMLElement {
         const ncol = cols.length + 3;
         // one leg alone on the card: its badge is the card's own, a row saying
         // it again is noise. Among other sections it is what names the line
+        // a header stands over every run: a leg whose sensor mixes lines
+        // names the ones the runs below ride
+        const legLabels = (leg) => {
+            const own = [...new Set(journeys.map((j) => j.rides[leg.idx]?.row?.line).filter(Boolean))];
+            return own.length ? own : [this._lineLabelOf(leg.def)];
+        };
         const head1 = plan.legs.length < 2 && !labelled ? "" : groups.map((g) => (g.leg
-            ? `<th class="leg" colspan="${g.span}" style="--lc:${esc(g.leg.def.color)}"><span class="mini-badge" style="background:${esc(g.leg.def.color)};color:${inkOn(g.leg.def.color)}">${esc(this._lineLabelOf(g.leg.def))}</span></th>`
+            ? `<th class="leg" colspan="${g.span}" style="--lc:${esc(g.leg.def.color)}">${legLabels(g.leg).map((l) => `<span class="mini-badge" style="background:${esc(this._lineColorOf(g.leg.def, l))};color:${inkOn(this._lineColorOf(g.leg.def, l))}">${esc(l)}</span>`).join(" ")}</th>`
             : `<th></th>`)).join("") + `<th></th><th></th><th></th>`;
         const waitT = esc(this._t("col_wait"));
         const head2 = cols.map((c, i) => (c.kind === "wait"
@@ -4364,7 +4573,8 @@ class Gtfs2LiveCard extends HTMLElement {
                         const arr = parseTs(x?.arr);
                         rows.push({ time: t, theo: null, rt: false, delayMin: null, tt: true,
                             durMin: arr ? Math.round((arr.getTime() - t.getTime()) / 60000) : null,
-                            tripId: x?.trip_id != null ? String(x.trip_id) : null, rtype: null, def });
+                            tripId: x?.trip_id != null ? String(x.trip_id) : null, rtype: null,
+                            oid: x?.origin_stop_id != null ? String(x.origin_stop_id) : null, def });
                     }
                 }
                 rows.sort((a, b) => a.time.getTime() - b.time.getTime());
@@ -4462,7 +4672,15 @@ class Gtfs2LiveCard extends HTMLElement {
                 if (nm == null) unnamed = true;
                 else if (want && nm === want) { s = v; break; }
             }
-            if (!s) return unnamed || !want ? null : { unserved: true };
+            // the same station under another record: SNCF keeps one per kind
+            // of train (OCETrain TER-, OCEINTERCITES- ...) and the same UIC code
+            const uic = /(\d{6,})$/.exec(String(stop.id))?.[1];
+            if (!s && uic) s = Object.entries(trip.stops).find(([id]) => id.endsWith(uic))?.[1];
+            // a station the file draws that the run's calls leave out: the
+            // file lists every call of each run it times, so the run does not
+            // call there (a K6+ to Tours through Les Aubrais, never Orléans),
+            // even when the run's other calls are stops the file never named
+            if (!s) return lg.names.has(String(stop.id)) || (!unnamed && want) ? { unserved: true } : null;
         }
         // the feed says the vehicle does not call here today
         if (s.skipped) return { unserved: true, skipped: true };
@@ -6328,10 +6546,10 @@ class Gtfs2LiveCard extends HTMLElement {
            is not running. Only the badge as a whole steps back a little. */
         .badge.resting { opacity: 0.92; }
         .badge.resting.sel { opacity: 1; }
-        /* A quiet source is drained, not dimmed. The colour itself is replaced
-           by its desaturated twin (see drain), so nothing here fades the number
-           or the mark: an opacity on the badge would take the mark down with
-           it, and a veil over the colour cost the number its contrast. */
+        /* A sensor out of service is drained, not dimmed: its colour is
+           replaced by its desaturated twin (see drain), so nothing here fades
+           the number or the mark. A positions file gone quiet alone keeps the
+           colour: its pip says it. */
         .badge-glyph { width: ${BADGE_PIP}px; height: ${BADGE_PIP}px; display: block; }
         .badge.clickable { cursor: pointer; }
         .badge.sel { outline: 2px solid var(--primary-color); outline-offset: 2px; }
@@ -7133,13 +7351,21 @@ class Gtfs2LiveCardEditor extends HTMLElement {
             const at = st[e]?.attributes || {};
             const names = this._stopsOf(e) || [];
             const lc = (v) => String(v || "").trim().toLowerCase();
-            const o = names.findIndex((n) => lc(n) === lc(at.origin_station_stop_name));
-            const d = names.findIndex((n, i) => i > o && lc(n) === lc(at.destination_station_stop_name));
+            // a train sensor gathering several stations at an end names them
+            // all, the one its entry was made from first: the stretch runs
+            // from the first of them a run reaches to the last, as the card
+            // reads it (_legSlice), never from the next departure's alone
+            const list = (v, one) => (Array.isArray(v) && v.length ? v : [one]).map(lc).filter(Boolean);
+            const ost = list(at.origin_stations, at.origin_station_stop_name);
+            const dst = list(at.destination_stations, at.destination_station_stop_name);
+            const o = names.findIndex((n) => ost.includes(lc(n)));
+            let d = -1;
+            names.forEach((n, i) => { if (i > o && dst.includes(lc(n))) d = dst.length > 1 || d < 0 ? i : d; });
             const rules = this._stopRules?.get(e);
             const stop = (n) => ({ name: n, key: n ? placeOf(n).key : "",
                 board: !rules?.noBoard?.has(lc(n)), alight: !rules?.noAlight?.has(lc(n)) });
-            const stops = o >= 0 && d > o ? names.slice(o, d + 1).map(stop)
-                : [stop(at.origin_station_stop_name), stop(at.destination_station_stop_name)];
+            const ends = [at.origin_stations?.[0] ?? at.origin_station_stop_name, at.destination_stations?.[0] ?? at.destination_station_stop_name];
+            const stops = o >= 0 && d > o ? names.slice(o, d + 1).map(stop) : ends.map((n) => stop(n));
             if (stops.length >= 2 && stops[0].key && stops[stops.length - 1].key) out.push({ entity: e, stops });
         }
         return out;
@@ -7554,7 +7780,13 @@ class Gtfs2LiveCardEditor extends HTMLElement {
         const leg = jr.legs[0];
         const form = document.createElement("ha-form");
         form.hass = this._hass;
-        form.schema = [{ name: "entity", selector: { entity: { include_entities: trips, filter: [{ integration: "gtfs2", domain: "sensor" }] } } }];
+        // a sensor another line of the card already has is not offered:
+        // picked twice, it drew one line twice, badge and departures. The
+        // line keeps its own, a duplicate made by hand included; the
+        // editor is drawn again at every pick, so the others follow
+        const taken = new Set(this._jrn.flatMap((j, k) => (k === ji ? [] : j.legs.map((l) => l.entity))).filter(Boolean));
+        const offered = trips.filter((e) => e === leg.entity || !taken.has(e));
+        form.schema = [{ name: "entity", selector: { entity: { include_entities: offered, filter: [{ integration: "gtfs2", domain: "sensor" }] } } }];
         form.computeLabel = () => L.j_entity;
         form.data = { entity: leg.entity || "" };
         form.addEventListener("value-changed", (ev) => this._legChanged(ev, ji));
