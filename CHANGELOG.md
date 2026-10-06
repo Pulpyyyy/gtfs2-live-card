@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.1
+
+### Fixed
+
+- A train sensor that gathers several stations at one end offers the ways from each of them, even when the route shape gtfs2 exports skips one. gtfs2 draws a line's fullest run each way, and the K6+ is drawn Tours to Paris by Les Aubrais, so a K6+ trip from or to Orléans was never offered. The card now takes the stops from the runs the sensor lists, when gtfs2 names every call of them in its leg file (`stops`, `refactor/architecture`). Where the runs part ways (Orléans or Blois after Les Aubrais), the stops are put in order by the runs' own times.
+
 ## 2.3.0
 
 ### Added
