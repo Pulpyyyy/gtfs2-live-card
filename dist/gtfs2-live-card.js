@@ -3074,8 +3074,98 @@ class Gtfs2LiveCard extends HTMLElement {
     // the trip serves), then the name. The destination is looked for AFTER
     // the origin: a loop line calls at a stop twice. An end not found falls
     // back on the shape's own end, so the slice still draws.
+    // The stops a sensor's runs really call at, in riding order, as a route
+    // the slice and the trips read: from the leg file of a gtfs2 that lists
+    // every call of every run it times (stops). What a train sensor needs
+    // when the shape gtfs2 draws is one run that skips one of its stations
+    // (a K6+ from Tours through Les Aubrais, never Orléans, on a sensor
+    // boarding at both). The order merges the runs' own, each sorted by
+    // its stop_sequence; a stop's clock is the runs' own gap from the stop
+    // before it. Its line joins the stops straight: the map still draws
+    // the shape. null without such a file.
+    _legRouteOf(def) {
+        const slot = this._ld[def.idx];
+        const lg = slot?.leg;
+        if (!lg?.all) return null;
+        if (slot.legRoute && slot.legRoute.leg === lg && slot.legRoute.shape === slot.route) return slot.legRoute.route;
+        const runs = Object.values(lg.trips || {}).map((t) => Object.entries(t?.stops || {})
+            .filter(([id]) => lg.places.has(id))
+            .sort((a, b) => Number(a[1]?.sequence) - Number(b[1]?.sequence)));
+        // every run's order kept: a stop comes after the ones a run calls
+        // at before it, the first seen first where nothing says
+        const first = new Map(), after = new Map(), before = new Map();
+        for (const calls of runs) {
+            calls.forEach(([id], k) => {
+                if (!first.has(id)) { first.set(id, first.size); after.set(id, new Set()); before.set(id, 0); }
+                const prev = k ? calls[k - 1][0] : null;
+                if (prev && prev !== id && !after.get(prev).has(id)) { after.get(prev).add(id); before.set(id, before.get(id) + 1); }
+            });
+        }
+        const at = (calls, id) => calls.find(([x]) => x === id)?.[1];
+        const secs = (c) => { const t = parseTs(c?.scheduled); return t ? t.getTime() / 1000 : null; };
+        // the stops in an order every run keeps; where none says (two
+        // branches past a fork: Orléans, or Blois and Tours, after Les
+        // Aubrais) the one reached first, by rank, then the first seen
+        const sortBy = (rank) => {
+            const deg = new Map(before), order = [], left = new Set(first.keys());
+            const better = (a, b) => (rank(a) ?? Infinity) - (rank(b) ?? Infinity) || first.get(a) - first.get(b);
+            while (left.size) {
+                let pick = null;
+                for (const id of left) if (deg.get(id) === 0 && (pick == null || better(id, pick) < 0)) pick = id;
+                // runs that disagree on the order (a loop): the best ranked goes
+                if (pick == null) for (const id of left) if (pick == null || better(id, pick) < 0) pick = id;
+                left.delete(pick);
+                order.push(pick);
+                for (const n of after.get(pick)) deg.set(n, deg.get(n) - 1);
+            }
+            return order;
+        };
+        // a stop's clock: the runs' own gap from the nearest stop before it
+        // that a run calling here also calls at
+        const clocks = (order) => {
+            const time = new Map([[order[0], 0]]);
+            order.forEach((id, k) => {
+                for (let j = k - 1; j >= 0 && !time.has(id); j--) {
+                    const prev = order[j];
+                    if (time.get(prev) == null) continue;
+                    for (const calls of runs) {
+                        const a = secs(at(calls, prev)), b = secs(at(calls, id));
+                        if (a != null && b != null && b >= a) { time.set(id, time.get(prev) + b - a); break; }
+                    }
+                }
+                if (!time.has(id)) time.set(id, null);
+            });
+            return time;
+        };
+        // first by when each was seen, then again by the clocks that gives
+        const rough = clocks(sortBy(() => null));
+        const order = sortBy((id) => rough.get(id));
+        if (order.length < 2) return null;
+        const time = clocks(order);
+        const shape = slot.route?.stops || [];
+        const lc = (v) => placeKey(v);
+        const stops = order.map((id) => {
+            const pl = lg.places.get(id);
+            const own = shape.find((x) => x.id === id) || shape.find((x) => lc(x.name) === lc(pl.name));
+            const calls = runs.map((c) => at(c, id)).filter(Boolean);
+            // shut out only on sure ground: the shape's line-wide word, else
+            // every run here with its door shut that way
+            const shut = (k) => calls.length > 0 && calls.every((c) => Number(c?.[k]) === 1);
+            return { ...this._world(pl.lat, pl.lon), id, name: pl.name, time: time.get(id),
+                noBoard: own ? own.noBoard : shut("pickup_type"), noAlight: own ? own.noAlight : shut("drop_off_type") };
+        });
+        const line = stops.map((x) => ({ x: x.x, y: x.y }));
+        const mPerU = this._mPerU(lg.places.get(order[0]).lat);
+        const cum = [0];
+        for (let i = 1; i < line.length; i++) cum.push(cum[i - 1] + Math.hypot(line[i].x - line[i - 1].x, line[i].y - line[i - 1].y) * mPerU);
+        stops.forEach((x, i) => { x.cum = cum[i]; });
+        const route = { line, cum, stops, mPerU, fromLeg: true };
+        slot.legRoute = { leg: lg, shape: slot.route, route };
+        return route;
+    }
+
     _legSlice(def, st) {
-        const route = this._ld[def.idx]?.route || null;
+        let route = this._ld[def.idx]?.route || null;
         const at = st?.attributes || {};
         const meta = this._emeta.get(def.entity) || {};
         const idOf = (v) => (v == null ? "" : String(v).split(": ")[0]);
@@ -3087,6 +3177,15 @@ class Gtfs2LiveCard extends HTMLElement {
         const stations = (v, kept) => (Array.isArray(v) ? v.map(String).filter(Boolean) : kept || []);
         const ostations = stations(at.origin_stations, meta.ostations);
         const dstations = stations(at.destination_stations, meta.dstations);
+        // a shape drawn from a run that skips one of the sensor's stations
+        // (a K6+ from Tours, never at Orléans): the stops its runs call at
+        // stand in, when they hold more of them
+        const wanted = [...ostations, ...dstations];
+        if (wanted.length > 2) {
+            const holds = (r) => wanted.filter((n) => (r?.stops || []).some((x) => placeKey(x.name) === placeKey(n))).length;
+            const lr = this._legRouteOf(def);
+            if (lr && holds(lr) > holds(route)) route = lr;
+        }
         const ends = {
             oid: idOf(at.origin_station_stop_id) || meta.origin || "",
             oname: at.origin_station_stop_name ?? meta.oname ?? "",
@@ -4621,7 +4720,21 @@ class Gtfs2LiveCard extends HTMLElement {
                 const c = f.geometry?.type === "Point" ? f.geometry.coordinates : null;
                 if (Array.isArray(c) && Number.isFinite(c[0]) && Number.isFinite(c[1])) places.set(id, { id, name, lat: c[1], lon: c[0] });
             }
-            slot.leg = { trips, names, places, tripId: gj?.properties?.trip_id || null, realtime: !!gj?.properties?.realtime };
+            // a gtfs2 that names every stop its runs call at (stops): their
+            // names and places all, where the features draw one run's only
+            const all = gj && typeof gj.stops === "object" && gj.stops ? gj.stops : null;
+            for (const [id, v] of Object.entries(all || {})) {
+                const name = String(v?.name ?? id).trim();
+                names.set(String(id), name.toLowerCase());
+                if (Number.isFinite(v?.lat) && Number.isFinite(v?.lon)) places.set(String(id), { id: String(id), name, lat: v.lat, lon: v.lon });
+            }
+            slot.leg = { trips, names, places, all: !!all, tripId: gj?.properties?.trip_id || null, realtime: !!gj?.properties?.realtime };
+            // the stops the runs call at can change the ways a card of trips
+            // finds (see _legRouteOf): searched again when they do
+            if (all) {
+                const sig = Object.values(trips).map((t) => Object.keys(t?.stops || {}).sort().join(",")).sort().join("/");
+                if (sig !== slot.legSig) { slot.legSig = sig; this._routesGen = (this._routesGen || 0) + 1; }
+            }
             // the runs this file times, remembered until they reach the
             // sensor's destination: the vehicles a journey map keeps
             const dest = gj?.properties?.destination_stop_id;

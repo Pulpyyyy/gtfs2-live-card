@@ -58,6 +58,7 @@ Some features read attributes that gtfs2 does not publish yet. They are written 
 | A train sensor gathering several stations at an end, each departure boarded at its own | | ✓ |
 | One square per line on a sensor riding several lines (K8+, P8, K6+) | the lines its listed departures ride | ✓ |
 | Each of those lines in its own colour | once seen on a next departure | ✓ |
+| A station the drawn route shape skips, taken from the runs the sensor lists | | ✓ |
 
 ## Installation
 
@@ -321,7 +322,7 @@ To add a language, copy `dist/lang/en.js`, translate the values, and add its cod
 - Without the gtfs2 route export (before 0.5.9.8) there is no shape and no ordered stops, so no journey can be timed; the map shows each vehicle's recent path, dashed.
 - On a gtfs2 that does not name the trip behind each realtime time, a realtime time is paired with a scheduled one only within 10 minutes, so the card never claims a wrong delay. A run later than that shows twice: once as realtime, once as scheduled.
 - A cancelled run can be struck through only if the card listed it before the feed cancelled it: gtfs2 then drops it from the sensor at once and keeps only its id, so a card opened afterwards has no time to strike.
-- A train sensor gathering several stations at its start reads its stations from the route shape gtfs2 exports, which is drawn from the line of the next departure. While that line skips one of the stations (a K6+ from Tours calls at Les Aubrais, never at Orléans), the ways from that station by this sensor are not offered; they come back with the next train that calls there.
+- A train sensor gathering several stations at one end reads its stops from the route shape gtfs2 exports, which is drawn from one run, the line's fullest each way. When that run skips one of the stations (the K6+ is drawn Tours to Paris by Les Aubrais, never at Orléans), the card takes the stops from the runs the sensor lists instead, if gtfs2 names every call of them in its leg file (`stops`, `refactor/architecture`). Otherwise the ways from that station by this sensor are not offered. Either way, a station that none of the listed runs calls at is not offered.
 - gtfs2 exports no speed, heading or per-vehicle timestamp. The card estimates heading and speed from successive positions, so the speed needs two distinct positions, and freshness is known per file, not per vehicle.
 
 ## License
