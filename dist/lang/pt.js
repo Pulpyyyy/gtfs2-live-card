@@ -99,6 +99,8 @@ export default {
         not_served: "sem paragem",
         cancelled: "suprimido",
         not_stopping: "não para aqui",
+        not_from: "não passa por {s}",
+        not_to: "não chega a {s}",
         no_boarding: "sem embarque aqui",
         no_alighting: "sem desembarque aqui",
         tip_no_board: "nunca há embarque aqui",

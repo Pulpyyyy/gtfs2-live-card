@@ -365,8 +365,12 @@ function legGeojson(key) {
   L.theo.forEach((t, i) => {
     const stops = {};
     const from = L.originSeqs?.[i] ?? L.originSeq;
+    // une course qui finit à la correspondance n'appelle pas plus loin
+    const to = L.destSeqs?.[i] ?? Infinity;
     for (const s of n.stops) {
-      if (s.stop_sequence < from) continue;
+      if (s.stop_sequence < from || s.stop_sequence > to) continue;
+      // un arrêt que l'horaire de cette course ne dessert pas : absent
+      if ((L.omit?.[i] || []).includes(s.stop_name)) continue;
       const sch = t + (s.stop_sequence - from) * 90;
       const st = { sequence: s.stop_sequence, scheduled_arrival: iso(sch), scheduled: iso(sch) };
       if (i < L.rtRuns) { st.expected = iso(sch + (L.delays[i] || 0)); st.delay = L.delays[i] || 0; }
@@ -380,9 +384,12 @@ function legGeojson(key) {
     }
     trips[L.tripIds[i]] = { stops };
   });
+  // les arrêts de toutes les courses, nom et place, comme gtfs2 les écrit
+  // depuis qu'il liste chaque appel (stops)
+  const all = L.stops ? Object.fromEntries(n.stops.map((s) => [s.stop_id, { name: s.stop_name, lat: s.lat, lon: s.lon }])) : undefined;
   return { type: "FeatureCollection",
            properties: { trip_id: L.tripIds[0], route_id: n.route_id, direction_id: String(n.direction_id), realtime: L.rtRuns > 0 },
-           features: [], trips };
+           features: [], trips, ...(all ? { stops: all } : {}) };
 }
 
 /* ── Les capteurs, tels que gtfs2 les expose ─────────────────────────────
@@ -454,6 +461,14 @@ function sensor(file, opts = {}) {
     at.next_departures_origin_stop_id = at.next_departures.map((_, i) =>
       (n.stops.find((x) => x.stop_name === opts.origins[i]) || n.reference).stop_id);
   }
+  // et l'arrêt où chaque passage dépose (opts.dests, des noms d'arrêt) :
+  // la destination, ou la correspondance où finit une course partielle,
+  // comme gtfs2 le publie dans next_departures_destination_stop_id
+  if (opts.dests) {
+    const at = states[id].attributes;
+    at.next_departures_destination_stop_id = at.next_departures.map((_, i) =>
+      n.stops.find((x) => x.stop_name === opts.dests[i]).stop_id);
+  }
   {
     const at = states[id].attributes;
     if (!at.next_departures_realtime_trips && Array.isArray(at.next_departures_realtime)
@@ -477,6 +492,9 @@ function sensor(file, opts = {}) {
       tripIds: at.next_departures_trips,
       originSeq: origin.stop_sequence,
       originSeqs: opts.origins ? opts.origins.map((nm) => (n.stops.find((x) => x.stop_name === nm) || origin).stop_sequence) : null,
+      destSeqs: opts.dests ? opts.dests.map((nm) => n.stops.find((x) => x.stop_name === nm).stop_sequence) : null,
+      stops: !!opts.legStops,
+      omit: opts.omit || null,
       rtRuns: opts.rtRuns ?? 3,
       skipped: opts.skipped || null,
       noBoard: opts.noBoard || null,
@@ -874,6 +892,84 @@ try {
     // le même capteur dans un trajet : une plaque par ligne sur le choix
     card({ lines: [legM, legB], trips: [["L'Indien", "Halmagrand"], ["L'Indien", "De Gaulle"]],
            title: "Lines riding one sensor, in trips", max_departures: 4 }, null, null, 500);
+  } else if (page === "connection" || page.startsWith("conn-")) {
+    // Un trajet qui descend aussi à une correspondance cochée aux deux bouts
+    // (origin_stations et destination_stations), comme le 13 de TAO
+    // République → Recherche Scientifique avec Chèques Postaux : le tram A
+    // de L'Indien à De Gaulle, Victor Hugo en correspondance. Trois sortes de
+    // passages : complets, qui finissent à Victor Hugo sans aller à De
+    // Gaulle, qui partent de Victor Hugo sans passer à L'Indien. Chaque
+    // passage dit où il monte et où il dépose
+    // (next_departures_origin_stop_id, next_departures_destination_stop_id).
+    stage.style.gridTemplateColumns = "500px";
+    const stopOf = (f, name) => network[f].stops.find((s) => s.stop_name === name);
+    const O = "L'Indien", C = "Victor Hugo", D = "De Gaulle";
+    const mins = (a, b) => Math.round((stopOf("tram-a", b).stop_sequence - stopOf("tram-a", a).stop_sequence) * 1.5);
+    const conn = (suffix, kinds, more = {}) => {
+      const origins = kinds.map((k) => (k === "late" ? C : O));
+      const dests = kinds.map((k) => (k === "short" ? C : D));
+      // un passage parti de Victor Hugo y est daté : le capteur liste
+      // l'heure où l'on monte
+      const theo = deps["tram-a"].map((r, i) => r.time + (kinds[i] === "late" ? mins(O, C) * 60 : 0));
+      return sensor("tram-a", { suffix, leg: true, legStops: true, origins, dests, ...more, attributes: {
+        friendly_name: `A: ${O} → ${D}`,
+        origin_stations: [O, C], destination_stations: [D, C],
+        origin_station_stop_id: stopOf("tram-a", O).stop_id, origin_station_stop_name: O,
+        destination_station_stop_id: stopOf("tram-a", D).stop_id, destination_station_stop_name: D,
+        next_departures: theo.map(iso), next_departures_realtime: theo.map(iso),
+        next_delays_realtime: theo.map(() => 0),
+        next_departures_durations: kinds.map((k) => (k === "short" ? mins(O, C) : k === "late" ? mins(C, D) : mins(O, D))),
+        next_departures_trips: theo.map((_, i) => `tram-a-${suffix}-trip-${i}`),
+      } });
+    };
+    const ends = conn("cs", ["short", "full", "late", "full", "short", "full"]);
+    const starts = conn("cl", ["late", "full", "short", "full", "late", "full"]);
+    // la vue Lignes, le tram A choisi par son badge (une carte d'une seule
+    // ligne n'en a pas) : le tableau et, sur la carte, la portion parcourue
+    // par le prochain départ
+    const view = async (el, mode, pick) => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      for (let i = 0; i < 60; i++) {
+        const b = el.shadowRoot?.querySelector(`#header [data-action="mode"][data-mode="${mode}"]`);
+        if (b) { b.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true })); break; }
+        await wait(100);
+      }
+      await wait(300);
+      if (pick) selectLine(el, 0);
+    };
+    const linesView = (el) => view(el, "lines", true);
+    // Une page par cas, pour la documentation : une carte en vue Lignes,
+    // le tram A choisi, dont le prochain départ est le cas montré (la carte
+    // dessine celui-là). Un trajet qui descend à Victor Hugo en fait un arrêt
+    // sur le chemin de la ligne : la colonne Via dit quand chaque passage y
+    // est, ou qu'il n'y est pas.
+    const CASES = {
+      "conn-full": [["full", "short", "full", "late", "full", "full"], {}, "Next run: the whole way"],
+      "conn-ends": [["short", "full", "late", "full", "short", "full"], {}, `Next run ends at ${C}`],
+      "conn-starts": [["late", "full", "short", "full", "late", "full"], {}, `Next run leaves from ${C}`],
+      "conn-skip": [["full", "full", "short", "full", "late", "full"], { omit: { 0: [C] }, skipped: { 3: [C] } },
+        `Next run passes ${C} without stopping`],
+    };
+    if (CASES[page]) {
+      const [kinds, more, title] = CASES[page];
+      linesView(card({ lines: [conn(page.slice(5), kinds, more), bus40], trips: [[O, D], [O, C]],
+        title, max_departures: 6 }, null, null, 500));
+    } else {
+      linesView(card({ lines: [ends, bus40], trips: [[O, D]], title: `Next run ends at ${C}`, max_departures: 6 }, null, null, 500));
+      linesView(card({ lines: [starts, bus40], trips: [[O, D]], title: `Next run leaves from ${C}`, max_departures: 6 }, null, null, 500));
+      // sans trajet, en vue Trajets : le tableau en liste
+      view(card({ lines: [ends], title: "No trips, Trips view: the list", max_departures: 6, show_map: false }, null, null, 500), "trips");
+      // et en trajet de L'Indien à De Gaulle : seuls les passages complets
+      card({ lines: [ends], trips: [[O, D]], title: `Trip ${O} → ${D}`, max_departures: 6, show_map: false }, null, null, 500);
+      // une station intermédiaire que des courses complètes ne desservent pas :
+      // la 2e passe à Victor Hugo sans s'y arrêter (horaire), la 4e ne s'y
+      // arrête pas aujourd'hui (le flux la raye). Un trajet qui descend à
+      // Victor Hugo en fait un arrêt sur le chemin de la ligne
+      const skips = conn("cx", ["full", "full", "short", "full", "late", "full"],
+        { omit: { 1: [C] }, skipped: { 3: [C] } });
+      linesView(card({ lines: [skips, bus40], trips: [[O, D], [O, C]], title: `Runs passing ${C} without stopping`, max_departures: 6 }, null, null, 500));
+      view(card({ lines: [skips], trips: [[O, C]], title: `Trip ${O} → ${C}`, max_departures: 6, show_map: false }, null, null, 500), "trips");
+    }
   } else if (page === "boarding") {
     // Les règles de montée et de descente du fichier de tronçon : un trajet
     // pris à Victor Hugo et quitté à Royale-Châtelet sur le tram A, dont

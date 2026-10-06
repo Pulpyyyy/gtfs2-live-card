@@ -99,6 +99,8 @@ export default {
         not_served: "nicht bedient",
         cancelled: "fällt aus",
         not_stopping: "hält hier nicht",
+        not_from: "fährt nicht ab {s}",
+        not_to: "fährt nicht bis {s}",
         no_boarding: "kein Einstieg hier",
         no_alighting: "kein Ausstieg hier",
         tip_no_board: "nie Einstieg hier",

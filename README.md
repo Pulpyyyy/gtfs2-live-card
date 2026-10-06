@@ -59,6 +59,7 @@ Some features read attributes that gtfs2 does not publish yet. They are written 
 | One square per line on a sensor riding several lines (K8+, P8, K6+) | the lines its listed departures ride | ✓ |
 | Each of those lines in its own colour | once seen on a next departure | ✓ |
 | A station the drawn route shape skips, taken from the runs the sensor lists | | ✓ |
+| A run ending at a connection short of the destination, or leaving from it, named on its row and cut on the map | | ✓ |
 
 ## Installation
 
@@ -229,6 +230,26 @@ A run that takes nobody on where you board, or sets nobody down where you get of
 
 *Above, a trip from Victor Hugo to Royale-Châtelet, part way along tram A: two runs take nobody on there and are not listed; the third sets nobody down at Royale-Châtelet and has no arrival. Below, the same boarding when no run takes anybody on.*
 
+### Runs that end short or start part way
+
+A gtfs2 sensor can get off at more places than its destination and get on at more than its origin (*Also get off at*, *Also board at*). A stop ticked in both is a connection, and a run may end there, short of the destination, or leave from there without calling at the origin. Each departure says where it really goes:
+
+- in the Lines view its arrival names the stop it ends at, "20:18 Victor Hugo", and the row says *does not go to De Gaulle*. A run leaving from the connection names it beside its departure and says *does not call at L'Indien*. Its duration is compared with the runs to the same stop;
+- with a line picked, the map draws the next departure's own stretch: the part of the line it does not ride is dashed and grey;
+- a stop on the way that a run passes without stopping says *not served* (timetable) or *not stopping here* (realtime feed) in the Via column;
+- a trip never offers a run that does not reach where it gets off, nor one that does not call where it boards.
+
+This needs `next_departures_destination_stop_id` from gtfs2 `refactor/architecture`.
+
+| | |
+|---|---|
+| ![The next run rides the whole way](images/conn-full-light.png) | ![The next run ends at the connection](images/conn-ends-light.png) |
+| *The next run rides the whole way.* | *It ends at Victor Hugo: the map stops there, the rest of the line is dashed.* |
+| ![The next run leaves from the connection](images/conn-starts-light.png) | ![The next run passes the connection without stopping](images/conn-skip-light.png) |
+| *It leaves from Victor Hugo, without calling at L'Indien.* | *It passes Victor Hugo without stopping: the Via column says so.* |
+
+*Tram A from L'Indien to De Gaulle, Victor Hugo ticked at both ends, tram A picked in the Lines view. Each board mixes the four kinds of run.*
+
 ## The map
 
 A vector base map ([MapLibre](https://maplibre.org/), [VersaTiles](https://versatiles.org/) styles on OpenStreetMap data) following the Home Assistant theme, light or dark. On it, the route shapes with direction arrows, their stops in order, the origin station, and the realtime vehicles, each with its mode's glyph and a heading arrow. Stops name themselves once the view is tight enough. Hover or tap a stop to see its name and the other lines of the card that call there. Markers keep a readable size at any zoom.
@@ -237,6 +258,8 @@ A vector base map ([MapLibre](https://maplibre.org/), [VersaTiles](https://versa
 - **Touch**: two fingers to pan and pinch (one finger keeps scrolling the page).
 - **Buttons**: zoom in and out, recenter after a manual move, and *Overview* while tracking.
 - Line badges, destination chips, section heads and vehicles are keyboard operable (Tab, then Enter).
+
+**A journey** is drawn stop by stop, the rest of its lines faint. When the run shown, the one open on the board or the next departure of the line picked, leaves past the journey's start or ends short of its end, the part it does not ride is dashed and grey (see [Runs that end short or start part way](#runs-that-end-short-or-start-part-way)).
 
 **Tracking**: tap a vehicle to follow it. The map zooms onto it, the route already travelled turns dashed and grey, and a popup gives the vehicle's terminus, its next stop and its estimated speed. The view follows the vehicle at every refresh. The popup's cross, `Escape` or a tap on the map background stop tracking and leave the map where it is. *Overview* stops tracking and resets the view, and also drops the destination picked. When the vehicle leaves the feed, the map goes back to the whole view and says so.
 

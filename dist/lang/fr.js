@@ -99,6 +99,8 @@ export default {
         not_served: "non desservi",
         cancelled: "supprimé",
         not_stopping: "ne s'arrête pas ici",
+        not_from: "ne passe pas à {s}",
+        not_to: "ne va pas à {s}",
         no_boarding: "montée impossible ici",
         no_alighting: "descente impossible ici",
         tip_no_board: "jamais de montée ici",

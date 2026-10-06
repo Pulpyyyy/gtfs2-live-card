@@ -19,13 +19,14 @@ mark. Every image is used by the main README.
 | `destinations` | the Journeys header: three departures, an arrival reached two ways, the return under its own departure, an alert, a forced colour |
 | `struck` | a cancelled run, one not stopping, alerts on their rows; a skipped stop on the timeline of a trip |
 | `boarding` | a trip boarded and left part way along tram A: runs that take nobody on or set nobody down there |
+| `conn-full`, `conn-ends`, `conn-starts`, `conn-skip` | tram A with Victor Hugo ticked at both ends, Lines view: the next run rides the whole way, ends at Victor Hugo, leaves from it, passes it without stopping |
 | `board` | the departures as a timetable (Lines view) |
 | `popup` | one vehicle tracked, its popup open |
 | `editor` | the visual editor, sections open |
 | `pips` | the round marks of chips and badges, one small image per mark, plus four whole-chip position schematics |
 
 The harness has more pages than these (`lines`, `departures`, `map`,
-`noposition`, `entete12`, `narrow`, `combos`, `paris`): they are test pages,
+`noposition`, `entete12`, `narrow`, `combos`, `paris`, `connection`): they are test pages,
 opened in a browser with `?page=<name>`, and are not photographed.
 
 No personal information is visible: the data is a frozen snapshot of the public

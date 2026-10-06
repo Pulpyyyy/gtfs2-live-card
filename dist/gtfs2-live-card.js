@@ -2941,6 +2941,10 @@ class Gtfs2LiveCard extends HTMLElement {
         // sensors, one of the stations of a train sensor that gathers
         // several at its start (Orléans and Les Aubrais to Paris)
         const oidsRaw = Array.isArray(a.next_departures_origin_stop_id) ? a.next_departures_origin_stop_id : [];
+        // and where it sets the rider down: the destination, or another
+        // place the journey also gets off at, where a run ending short of
+        // the destination stops (see _rowEnds)
+        const didsRaw = Array.isArray(a.next_departures_destination_stop_id) ? a.next_departures_destination_stop_id : [];
         // the line each departure rides, "<time> (<short>/<long>)" beside
         // each: a train sensor may gather several (K8+, K6+ and P8 from
         // Orléans to Paris), and the badge the sensor wears is its next
@@ -2958,7 +2962,7 @@ class Gtfs2LiveCard extends HTMLElement {
             }
             return { t, dur, tripId: tripsRaw[j] != null ? String(tripsRaw[j]) : null,
                 rtype: typesRaw[j] != null ? typesRaw[j] : null, oid: oidsRaw[j] != null ? String(oidsRaw[j]) : null,
-                line: mixed ? linesRaw[j] || null : null };
+                did: didsRaw[j] != null ? String(didsRaw[j]) : null, line: mixed ? linesRaw[j] || null : null };
         }).filter(Boolean);
         // a feed gone quiet leaves its last predictions behind: past
         // RT_STALE they are not live any more, and the schedule stands in
@@ -2998,10 +3002,10 @@ class Gtfs2LiveCard extends HTMLElement {
             rows.push({ time: t, theo: theoT, rt: true, delayMin, durMin: theoT ? theoAll[best].dur : null,
                 tripId: theoT ? theoAll[best].tripId : tid,
                 rtype: theoT ? theoAll[best].rtype : null, oid: theoT ? theoAll[best].oid : null,
-                line: theoT ? theoAll[best].line : null, def: src.def });
+                did: theoT ? theoAll[best].did : null, line: theoT ? theoAll[best].line : null, def: src.def });
         });
         theoAll.forEach((x, j) => {
-            if (!usedTheo.has(j)) rows.push({ time: x.t, theo: null, rt: false, delayMin: null, durMin: x.dur, tripId: x.tripId, rtype: x.rtype, oid: x.oid, line: x.line, def: src.def });
+            if (!usedTheo.has(j)) rows.push({ time: x.t, theo: null, rt: false, delayMin: null, durMin: x.dur, tripId: x.tripId, rtype: x.rtype, oid: x.oid, did: x.did, line: x.line, def: src.def });
         });
         // The runs the sensor lists, remembered while they are ahead. A run
         // the feed strikes out leaves the sensor's lists at once (gtfs2
@@ -3019,7 +3023,7 @@ class Gtfs2LiveCard extends HTMLElement {
             if (!x.tripId) continue;
             const key = `${ent}|${x.tripId}|${x.t.getTime()}`;
             listed.add(key);
-            if (!this._seenRows.has(key)) this._seenRows.set(key, { t: x.t, dur: x.dur, rtype: x.rtype, tripId: x.tripId, oid: x.oid, line: x.line });
+            if (!this._seenRows.has(key)) this._seenRows.set(key, { t: x.t, dur: x.dur, rtype: x.rtype, tripId: x.tripId, oid: x.oid, did: x.did, line: x.line });
         }
         const struckOf = (ids, kind) => {
             const want = new Set((Array.isArray(ids) ? ids : []).map(String));
@@ -3027,7 +3031,7 @@ class Gtfs2LiveCard extends HTMLElement {
             for (const [key, m] of this._seenRows) {
                 // still listed: the feed struck it on another day
                 if (!key.startsWith(ent + "|") || !want.has(m.tripId) || listed.has(key)) continue;
-                rows.push({ time: m.t, theo: m.t, rt: true, delayMin: null, durMin: m.dur, tripId: m.tripId, rtype: m.rtype, oid: m.oid, line: m.line, def: src.def, struck: kind });
+                rows.push({ time: m.t, theo: m.t, rt: true, delayMin: null, durMin: m.dur, tripId: m.tripId, rtype: m.rtype, oid: m.oid, did: m.did, line: m.line, def: src.def, struck: kind });
             }
         };
         struckOf(a.cancelled_trips_realtime, "cancelled");
@@ -3768,6 +3772,76 @@ class Gtfs2LiveCard extends HTMLElement {
         return uic ? s.route.stops.findIndex((x) => String(x.id || "").endsWith(uic)) : -1;
     }
 
+    // Where on its leg's shape a run sets the rider down: the leg's
+    // destination, except on a sensor getting off at several places, where
+    // each departure says which (the 13 ending at Chèques Postaux, short of
+    // Recherche Scientifique). Looked for past where the run boards; -1
+    // when that place is not on the shape.
+    _rowEnd(leg, row) {
+        const s = leg.slice;
+        if (!s.dMulti || !row?.did || !s.route) return s.di;
+        const from = Math.max(0, this._rowStart(leg, row));
+        const name = this._ld[leg.def.idx]?.leg?.names.get(row.did);
+        const i = findStopIdx(s.route.stops, null, row.did, name, from + 1);
+        if (i >= 0) return i;
+        const uic = /(\d{6,})$/.exec(row.did)?.[1];
+        return uic ? s.route.stops.findIndex((x, k) => k > from && String(x.id || "").endsWith(uic)) : -1;
+    }
+
+    // The name of a stop a sensor's runs call at, by its id: the leg file's
+    // record, then the shape's, then the same station under another record
+    // (SNCF keeps one per kind of train, the same UIC code). Null unknown
+    _stopNameOf(def, id) {
+        if (id == null || id === "") return null;
+        const k = String(id);
+        const slot = this._ld[def.idx];
+        const places = slot?.leg?.places;
+        const stops = slot?.route?.stops || [];
+        const pl = places?.get(k) || stops.find((x) => x.id === k);
+        if (pl?.name) return pl.name;
+        const uic = /(\d{6,})$/.exec(k)?.[1];
+        if (!uic) return null;
+        for (const [pid, p] of places || []) if (pid.endsWith(uic) && p.name) return p.name;
+        return stops.find((x) => String(x.id || "").endsWith(uic))?.name || null;
+    }
+
+    // Where a departure takes the rider on and sets them down, when that is
+    // not the sensor's own ends. A journey getting on or off at more places
+    // than its two (origin_stations, destination_stations, a connection
+    // ticked in both) has runs leaving past its origin or ending short of
+    // its destination: the 08:34 from République ends at Chèques Postaux
+    // and never reaches Recherche Scientifique. {on, off, o, d}: on and off
+    // the place as the sensor lists it, null where the run keeps the
+    // sensor's own end; o and d those ends, which it then does not serve
+    _rowEnds(r) {
+        const out = { on: null, off: null, o: null, d: null };
+        if (!r?.def?.entity || r.struck || (!r.oid && !r.did)) return out;
+        const at = this._hass?.states?.[r.def.entity]?.attributes || {};
+        const meta = this._emeta.get(r.def.entity) || {};
+        const list = (v, kept) => (Array.isArray(v) ? v.map(String).filter(Boolean) : kept || []);
+        // another of the places listed, never a name the list does not
+        // hold: a platform of the end itself is spelled its own way
+        const other = (id, names) => {
+            if (!id || names.length < 2) return null;
+            const k = placeKey(this._stopNameOf(r.def, id));
+            if (!k || k === placeKey(names[0])) return null;
+            return names.slice(1).find((n) => placeKey(n) === k) || null;
+        };
+        const os = list(at.origin_stations, meta.ostations), ds = list(at.destination_stations, meta.dstations);
+        out.on = other(r.oid, os);
+        out.off = other(r.did, ds);
+        if (out.on) out.o = os[0];
+        if (out.off) out.d = ds[0];
+        return out;
+    }
+
+    // what the board says of those: "does not call at République",
+    // "does not go to Recherche Scientifique", one after the other
+    _rowEndsNote(e) {
+        return [e.on ? this._t("not_from", { s: esc(e.o) }) : "", e.off ? this._t("not_to", { s: esc(e.d) }) : ""]
+            .filter(Boolean).join(" · ");
+    }
+
     _rideTime(p, ride) {
         if (!ride || !p) return null;
         const s = ride.leg.slice;
@@ -3807,9 +3881,15 @@ class Gtfs2LiveCard extends HTMLElement {
         if (known) return known;
         // a run is nowhere before the station it leaves the sensor from
         if (s.oMulti && p.at != null && from >= 0 && p.at < from) return { unserved: true };
+        // nor past the place it sets the rider down at, short of the
+        // destination on a sensor getting off at several
+        const to = this._rowEnd(ride.leg, row);
+        if (s.dMulti && p.at != null && to >= 0 && p.at > to) return { unserved: true };
         // the duration runs to the run's own end, which on a sensor
-        // gathering several stations there is not always the leg's last
-        if (p.at != null && p.at === s.di && s.dFound && !s.dMulti && row.durMin != null) {
+        // gathering several stations there is not always the leg's last:
+        // the place each departure names, when the sensor says
+        const ownEnd = s.dMulti ? !!row.did && to >= 0 && p.at === to : p.at === s.di && s.dFound;
+        if (p.at != null && ownEnd && row.durMin != null) {
             return { t: new Date(row.time.getTime() + row.durMin * 60000), rt: !!row.rt,
                 sch: sch0 ? new Date(sch0.getTime() + row.durMin * 60000) : null };
         }
@@ -3842,17 +3922,30 @@ class Gtfs2LiveCard extends HTMLElement {
                 const s = leg.slice;
                 const a = leg.si ?? s.oi, b = leg.ei ?? s.di;
                 if (!s.route || a == null || b == null || b <= a) continue;
+                // the run the board shows for the journey (see _setMapRefs)
+                // may leave past the leg's start or end short of its end, on
+                // a sensor getting on or off at several places: its slice is
+                // ridden from where it boards to where it sets down, the rest
+                // of the leg drawn as not ridden
+                const row = this._mapRefs?.get(pl.ji)?.[leg.idx];
+                let ra = a, rb = b;
+                if (row && s.oMulti) { const i = this._rowStart(leg, row); if (i > a && i < b) ra = i; }
+                if (row && s.dMulti) { const i = this._rowEnd(leg, row); if (i > ra && i < b) rb = i; }
                 // a sensor ridden by two journeys is drawn once
-                const key = `${leg.def.idx}:${a}:${b}`;
+                const key = `${leg.def.idx}:${a}:${b}:${ra}:${rb}`;
                 if (drawn.has(key)) continue;
                 drawn.add(key);
-                const stops = s.route.stops.slice(a, b + 1);
                 // cut from the shape bent through the line's vehicles, so the
                 // slice runs through those riding it
-                const sub = this._subRoute(bent?.get(leg.def.idx) || s.route, stops[0].cum, stops[stops.length - 1].cum);
+                const cut = (i, j) => {
+                    const stops = s.route.stops.slice(i, j + 1);
+                    return { stops, sub: this._subRoute(bent?.get(leg.def.idx) || s.route, stops[0].cum, stops[stops.length - 1].cum) };
+                };
+                const { sub, stops } = cut(ra, rb);
+                const off = [...(ra > a ? [cut(a, ra)] : []), ...(rb < b ? [cut(rb, b)] : [])];
                 if (!byLine.has(leg.def.idx)) byLine.set(leg.def.idx, []);
-                byLine.get(leg.def.idx).push({ leg, sub, stops });
-                if (pl === plan) fit.push(...sub.line);
+                byLine.get(leg.def.idx).push({ leg, sub, stops, off });
+                if (pl === plan) for (const g of [{ sub }, ...off]) fit.push(...g.sub.line);
             }
         }
         const points = [], walks = [];
@@ -3918,6 +4011,18 @@ class Gtfs2LiveCard extends HTMLElement {
         return { line, cum, mPerU: route.mPerU };
     }
 
+    // The run each journey is drawn for on the map, {ji: [its row per leg]}:
+    // where a run boards and sets down is its own on a sensor getting on or
+    // off at several places (see _journeyGeometry). The map is drawn again
+    // when one of them changes
+    _setMapRefs(refs) {
+        this._mapRefs = refs;
+        const sig = [...refs].map(([ji, rows]) => `${ji}:${rows.map((r) => `${r?.tripId}|${r?.oid}|${r?.did}`).join(",")}`).join(";");
+        if (sig === this._mapRefsSig) return;
+        this._mapRefsSig = sig;
+        this._scheduleRerender();
+    }
+
     _renderDepartures() {
         if (!this._built) return;   // no shell yet: see _renderHeader
         const head = this.shadowRoot.getElementById("dep-head");
@@ -3925,6 +4030,7 @@ class Gtfs2LiveCard extends HTMLElement {
         // hidden by configuration, or a map-only card with no departure
         // sensor anywhere: no pane, no header, not even its divider
         if (this._config.show_departures === false || !this._depSources().length) {
+            this._setMapRefs(new Map());
             head.style.display = "none";
             body.innerHTML = "";
             return;
@@ -3967,6 +4073,16 @@ class Gtfs2LiveCard extends HTMLElement {
             const all = table ? secs.flatMap((s) => s.runs).sort(byDep)
                 : secs.flatMap((s) => s.all).sort(byDep).slice(0, this._config.max_departures);
             const hasRtJ = all.some((j) => j.rt);
+            // each journey drawn on the map for the run open on the board,
+            // else its first listed
+            const refs = new Map();
+            for (const sec of secs) {
+                for (const p of sec.plans) {
+                    const run = sec.all.find((j) => j.plan === p && j.key === this._jOpen) || sec.all.find((j) => j.plan === p && !j.struck);
+                    if (run) refs.set(p.ji, run.rides.map((r) => r.row));
+                }
+            }
+            this._setMapRefs(refs);
             if (this._collapsed.dep) {
                 head.innerHTML = `
                     <span class="chev">${ICONS.chevronRight}</span>
@@ -4030,6 +4146,11 @@ class Gtfs2LiveCard extends HTMLElement {
             return;
         }
         const { rows, multi } = this._departureRows();
+        // the line picked is drawn on the map for its next departure
+        const refs = new Map();
+        const next = this._hiLine != null ? rows.find((r) => !r.struck && r.def?.idx === this._hiLine) : null;
+        if (next) refs.set(-1 - this._hiLine, [next]);
+        this._setMapRefs(refs);
         // the line of each row: needed among several sensors, and on one
         // sensor whose runs ride different lines (a train sensor on K8+, K6+
         // and P8). The destinations stay a matter of several sensors
@@ -4088,9 +4209,16 @@ class Gtfs2LiveCard extends HTMLElement {
             // carry it - so a row with nothing exceptional is a single line.
             const bits = [];
             if (strike) bits.push(`<span class="sub strike">${this._t("scheduled_at", { t: fmtHM(r.theo) })}</span>`);
-            if (this._config.show_duration && r.durMin != null && !r.struck) {
-                bits.push(`<span class="sub dur">→ ${fmtHM(new Date(r.time.getTime() + r.durMin * 60000))} · ${fmtDur(r.durMin)}</span>`);
+            // a run ending short of the destination says where, with its
+            // arrival there, durations on or not; one leaving past the
+            // origin names the place beside its time
+            const e = this._rowEnds(r);
+            if (r.durMin != null && !r.struck && (this._config.show_duration || e.off)) {
+                const end = e.off ? ` <span class="end-at">${esc(e.off)}</span>` : "";
+                bits.push(`<span class="sub dur">→ ${fmtHM(new Date(r.time.getTime() + r.durMin * 60000))}${end}${this._config.show_duration ? ` · ${fmtDur(r.durMin)}` : ""}</span>`);
             }
+            const note = this._rowEndsNote(e);
+            if (note) bits.push(`<span class="sub jbroken">${note}</span>`);
             const rv = this._rowVias(r, vias);
             if (rv.length) bits.push(`<span class="sub vias">${this._viasHtml(rv)}</span>`);
             const subLine = bits.length ? `<span class="sub-line">${bits.join("")}</span>` : "";
@@ -4110,6 +4238,7 @@ class Gtfs2LiveCard extends HTMLElement {
                 <div class="times">
                     <div class="time-line">
                         <span class="time${r.struck ? " struck" : ""}">${fmtHM(r.time)}</span>
+                        ${e.on ? `<span class="sub end-at">${esc(e.on)}</span>` : ""}
                         ${this._rowModeHtml(r)}
                         ${tag ? `<span class="day-tag">${esc(tag)}</span>` : ""}
                         ${r.rt ? `<span class="rt-icon">${ICONS.live}</span>` : ""}
@@ -4323,8 +4452,11 @@ class Gtfs2LiveCard extends HTMLElement {
         // lines to Paris rate each other (the slow one reads warm even at its
         // own usual pace) while lines to different places never do. A sensor
         // naming no destination falls back to its own line's best.
+        // A run ending short of the destination is graded among the runs to
+        // where it does end, or the 13 to Chèques Postaux would read fast
+        const ends = new Map(rows.map((r) => [r, this._rowEnds(r)]));
         const keyOf = (r) => {
-            const dest = r.def?.entity && this._hass?.states?.[r.def.entity]?.attributes?.destination_station_stop_name;
+            const dest = ends.get(r).off || (r.def?.entity && this._hass?.states?.[r.def.entity]?.attributes?.destination_station_stop_name);
             return dest ? "d:" + String(dest).trim().toLowerCase() : "l:" + (r.def ? r.def.idx : -1);
         };
         const best = new Map();
@@ -4340,6 +4472,10 @@ class Gtfs2LiveCard extends HTMLElement {
         // a via column only when a line of the board has stops on the way
         const showVia = rows.some((r) => (vias.get(r.def?.idx) || []).length);
         const ncol = 5 + (lined ? 1 : 0) + (showVia ? 1 : 0);
+        // a run leaving past the origin, or ending short of the destination,
+        // names the place beside its time: the times then start the cells,
+        // read from the left, whatever follows them
+        const named = rows.some((r) => ends.get(r).on || ends.get(r).off);
         let lastTag = "";
         const cells = rows.map((r) => {
             const tag = dayTag(lang, r.time, now);
@@ -4356,8 +4492,10 @@ class Gtfs2LiveCard extends HTMLElement {
                 ? `<span class="dly ${r.delayMin > 0 ? "st-late" : "st-early"}">${r.delayMin > 0 ? "+" : ""}${r.delayMin} min</span>` : "";
             // a coach on a train line says so on the same left side, for the
             // same reason, and so does the operator's alert on the run
+            const e = ends.get(r);
             const dep = (r.rt ? `<span class="rt-icon">${ICONS.live}</span>` : "") + this._rowModeHtml(r) + this._rowAlertHtml(r)
-                + (r.struck ? `<span class="struck">${fmtHM(r.time)}</span>` : fmtHM(r.time));
+                + (r.struck ? `<span class="struck">${fmtHM(r.time)}</span>` : fmtHM(r.time))
+                + (e.on ? ` <span class="end-at">${esc(e.on)}</span>` : "");
             const depTitle = r.struck ? this._t(r.struck === "cancelled" ? "cancelled" : "not_stopping")
                 : r.rt && r.theo && Math.abs(r.time - r.theo) >= 60000
                 ? this._t("scheduled_at", { t: fmtHM(r.theo) })
@@ -4368,7 +4506,7 @@ class Gtfs2LiveCard extends HTMLElement {
                 // the arrival names its day only when it differs from the
                 // DEPARTURE's: a night run does not repeat its own date
                 const atag = dayTag(lang, at, r.time);
-                arr = `${atag ? `<span class="day-tag">${esc(atag)}</span> ` : ""}${fmtHM(at)}`;
+                arr = `${atag ? `<span class="day-tag">${esc(atag)}</span> ` : ""}${fmtHM(at)}${e.off ? ` <span class="end-at">${esc(e.off)}</span>` : ""}`;
                 const b = best.get(keyOf(r)) ?? r.durMin;
                 // only the fast runs are marked, green within a couple of
                 // minutes or 15% of the best time to the same place: a slower
@@ -4379,18 +4517,26 @@ class Gtfs2LiveCard extends HTMLElement {
             const line = lined
                 ? `<td class="fit">${r.def ? `<span class="row-badge" style="background:${esc(this._rowColor(r))};color:${inkOn(this._rowColor(r))}">${esc(this._rowLabel(r))}</span>` : "—"}</td>`
                 : "";
-            // the last column takes the slack: the destination, or nothing
-            const last = showDest ? `<td class="dest-c">${esc(destOf(r)) || "—"}</td>` : `<td></td>`;
+            // the last column takes the slack: the destination, or nothing.
+            // A run that does not serve the sensor's ends says so there, in
+            // place of the destination it does not reach. Without a column
+            // of destinations its cell stays when the words move under the
+            // row (narrow), or the row's rule stops short of the others
+            const note = this._rowEndsNote(e);
+            const last = note ? `<td class="${showDest ? "dest-c" : "note-c"}"><span class="jbroken">${note}</span></td>`
+                : showDest ? `<td class="dest-c">${esc(destOf(r)) || "—"}</td>` : `<td></td>`;
             const rv = this._rowVias(r, vias);
             const via = showVia ? `<td class="fit vias">${rv.length ? this._viasHtml(rv) : "—"}</td>` : "";
             // the same words again, under the times, for a narrow card: on a
             // phone seven columns left the stops on the way two letters of
             // width ("Ras / pail / 06:0 / 3"). There the two columns of words
             // go and this row says them whole; wide, it is never shown
-            const words = [showDest && destOf(r) ? `<span class="sub-dest">→ ${esc(destOf(r))}</span>` : "",
+            const words = [note ? `<span class="sub-dest jbroken">${note}</span>`
+                : showDest && destOf(r) ? `<span class="sub-dest">→ ${esc(destOf(r))}</span>` : "",
                 rv.length ? `<span class="sub-via">${this._t("col_via")} ${this._viasHtml(rv)}</span>` : ""].filter(Boolean);
             const sub = words.length ? `<tr class="row-sub">${lined ? "<td></td>" : ""}<td colspan="${ncol - (lined ? 1 : 0)}">${words.join("")}</td></tr>` : "";
-            return sep + `<tr>${line}<td class="num dep fit" title="${esc(depTitle)}">${dep}</td><td class="dly-c fit">${dly}</td>${via}<td class="num fit">${arr}</td>`
+            const num = named ? "num at" : "num";
+            return sep + `<tr>${line}<td class="${num} dep fit" title="${esc(depTitle)}">${dep}</td><td class="dly-c fit">${dly}</td>${via}<td class="${num} fit">${arr}</td>`
                 + `<td class="num fit">${dur}</td>${last}</tr>` + sub;
         }).join("");
         const summary = nextRow ? `<div class="board-next">${this._t("next_dep_in", {
@@ -4400,8 +4546,8 @@ class Gtfs2LiveCard extends HTMLElement {
         return summary
             + `<div class="board-wrap"><table class="board"><thead><tr>`
             + (lined ? `<th class="fit">${this._t("col_line")}</th>` : "")
-            + `<th class="num fit">${this._t("col_departure")}</th><th class="fit"></th>`
-            + (showVia ? `<th class="fit vias">${this._t("col_via")}</th>` : "") + `<th class="num fit">${this._t("col_arrival")}</th>`
+            + `<th class="${named ? "num at" : "num"} fit">${this._t("col_departure")}</th><th class="fit"></th>`
+            + (showVia ? `<th class="fit vias">${this._t("col_via")}</th>` : "") + `<th class="${named ? "num at" : "num"} fit">${this._t("col_arrival")}</th>`
             + `<th class="num fit">${this._t("col_duration")}</th><th${showDest ? ` class="dest-c"` : ""}>${showDest ? this._t("col_destination") : ""}</th>`
             + `</tr></thead><tbody>${cells}</tbody></table></div>`;
     }
@@ -4673,7 +4819,8 @@ class Gtfs2LiveCard extends HTMLElement {
                         rows.push({ time: t, theo: null, rt: false, delayMin: null, tt: true,
                             durMin: arr ? Math.round((arr.getTime() - t.getTime()) / 60000) : null,
                             tripId: x?.trip_id != null ? String(x.trip_id) : null, rtype: null,
-                            oid: x?.origin_stop_id != null ? String(x.origin_stop_id) : null, def });
+                            oid: x?.origin_stop_id != null ? String(x.origin_stop_id) : null,
+                            did: x?.destination_stop_id != null ? String(x.destination_stop_id) : null, def });
                     }
                 }
                 rows.sort((a, b) => a.time.getTime() - b.time.getTime());
@@ -5756,6 +5903,16 @@ class Gtfs2LiveCard extends HTMLElement {
                     // names; the points get their numbers further down
                     routeSvg += `<path d="${dAll}" fill="none" stroke="${esc(color)}" stroke-width="${4.5 * u}" opacity="0.18" stroke-linecap="round"></path>`;
                     for (const g of jGeo.byLine.get(def.idx)) {
+                        // the part of the leg the run shown does not ride,
+                        // dashed in grey like the way a tracked vehicle has
+                        // left behind, its stops grey: under the ridden slice
+                        for (const o of g.off) {
+                            const d = o.sub.line.map((p, i) => `${i ? "L" : "M"}${((p.x - O.x) / SVG_UNIT).toFixed(3)} ${((p.y - O.y) / SVG_UNIT).toFixed(3)}`).join(" ");
+                            routeSvg += `<path class="jskip" d="${d}" fill="none" stroke="#8a9096" stroke-width="${3.5 * u}" stroke-dasharray="${7 * u} ${7 * u}" opacity="0.7" stroke-linecap="round"></path>`;
+                            for (const s of o.stops) {
+                                if (!g.stops.includes(s)) routeSvg += this._stopMarker(s, rel(s), u, "#8a9096", 3.5, hasLinks(s, def), def.idx, route);
+                            }
+                        }
                         const d = g.sub.line.map((p, i) => `${i ? "L" : "M"}${((p.x - O.x) / SVG_UNIT).toFixed(3)} ${((p.y - O.y) / SVG_UNIT).toFixed(3)}`).join(" ");
                         routeSvg += `<path d="${d}" fill="none" stroke="${esc(color)}" stroke-width="${5 * u}" opacity="0.92" stroke-linecap="round"></path>`;
                         routeSvg += this._routeArrows(g.sub, rel, u, spanM);
@@ -6932,6 +7089,10 @@ class Gtfs2LiveCard extends HTMLElement {
         .board th:first-child, .board td:first-child { padding-left: 16px; }
         .board th:last-child, .board td:last-child { padding-right: 16px; }
         .board .num { text-align: right; }
+        /* a time followed by the place a run leaves from or ends at */
+        .board .num.at { text-align: left; }
+        .end-at { font-weight: 500; }
+        .board td.dep .end-at { font-weight: 400; }
         /* a day said once, on a row of its own */
         .board tr.day-sep td { padding: 8px 12px 2px; border-top: none; }
         .board tr.row-sub { display: none; }
@@ -6939,6 +7100,7 @@ class Gtfs2LiveCard extends HTMLElement {
         .board tr.row-sub .sub-dest, .board tr.row-sub .sub-via { display: block; }
         .board tr.row-sub .via-t { display: inline; white-space: nowrap; }
         .board tr.row-sub b:not(.jbroken) { color: var(--primary-text-color); }
+        .board tr.row-sub .jbroken, .sub.jbroken { white-space: normal; }
         /* the delay follows the time it moves */
         .board .dly { font-size: 11px; font-weight: 600; }
         .board .dly-c { padding-left: 0; }
@@ -6996,7 +7158,7 @@ class Gtfs2LiveCard extends HTMLElement {
            with the stops on the way beside it. Under 640 px they take the
            row under the times. */
         @container (max-width: 640px) {
-            .board:not(.jboard) .vias, .board:not(.jboard) .dest-c { display: none; }
+            .board:not(.jboard) .vias, .board:not(.jboard) .dest-c, .board:not(.jboard) .note-c > * { display: none; }
             .board:not(.jboard) tr.row-sub { display: table-row; }
         }
         .info-strip { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--divider-color); }

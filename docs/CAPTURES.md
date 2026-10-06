@@ -77,6 +77,7 @@ positions pour servir l'instantané.
 | `destinations` | l'entête départ puis arrivée : trois départs, une arrivée atteinte de deux façons, le retour rangé sous son propre départ, une alerte, une couleur forcée |
 | `struck` | ce que le flux raye : une course supprimée, une qui ne s'arrête pas, des alertes sur leurs lignes ; sur un trajet, un arrêt sauté à la place de son heure |
 | `boarding` | un trajet pris et quitté en route sur le tram A : des courses qui ne prennent personne à la montée, une qui ne dépose personne à la descente, puis la même montée sans aucune course qui y prenne |
+| `conn-full`, `conn-ends`, `conn-starts`, `conn-skip` | le tram A, Victor Hugo coché aux deux bouts, vue Lignes : le prochain passage va jusqu'au bout, finit à Victor Hugo, en part, y passe sans s'arrêter |
 | `board` | les départs en tableau (vue Lignes), durées colorées |
 | `popup` | un véhicule suivi, sa bulle ouverte : terminus, prochain arrêt |
 | `editor` | l'éditeur visuel, sections ouvertes |
@@ -84,7 +85,7 @@ positions pour servir l'instantané.
 
 Ce sont les seules pages que `shots.py` photographie, et chaque image sert au
 README. Le harnais en garde d'autres (`lines`, `departures`, `map`,
-`noposition`, `entete12`, `narrow`, `combos`, `paris`) comme pages de test, à
+`noposition`, `entete12`, `narrow`, `combos`, `paris`, `connection`) comme pages de test, à
 ouvrir dans un navigateur avec `?page=<nom>` ; elles ne produisent aucune
 image.
 

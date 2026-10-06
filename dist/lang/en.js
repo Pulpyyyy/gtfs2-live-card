@@ -100,6 +100,8 @@ export default {
         not_served: "not served",
         cancelled: "cancelled",
         not_stopping: "not stopping here",
+        not_from: "does not call at {s}",
+        not_to: "does not go to {s}",
         no_boarding: "no boarding here",
         no_alighting: "no alighting here",
         tip_no_board: "never boards here",
