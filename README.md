@@ -127,7 +127,7 @@ The ways offered are the ones a rider would take:
 - where two lines share a stretch, as metros 4 and 6 share Denfert-Rochereau and Raspail, every station of it is a change, and the board keeps, for each departure, the one that arrives first, the one with the shorter walk when they tie;
 - no way has more than `max_changes` changes (5 by default).
 
-A trip may take a `name`, the destination it belongs to in the *Journeys* header, and a `destination_color`. A card without trips has no journeys: its lines share one departures board.
+A trip may take a `name`, the destination it belongs to in the *Journeys* header, and a `destination_color`. A card without trips still has its *Journeys* view: each sensor is a journey of its own, from its origin to its destination, and the header offers their ends. Trips are what a journey needs to change lines, to get on or off at a stop between a sensor's ends, or to take a `name` or a `destination_color`.
 
 The board then lists the runs of all trips in one column, first to leave first, `max_departures` in all. Each row is tagged with its line and its ends. A journey with a change opens into a timeline: each leg in its line's colour, its numbered points and their clocks, the walk and the wait at each change, the arrival and the total time. The map draws the stretch of each line you ride, the walk between the two stops, and a numbered disc on every point.
 

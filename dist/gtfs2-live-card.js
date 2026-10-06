@@ -5470,15 +5470,19 @@ class Gtfs2LiveCard extends HTMLElement {
         // stretch of the line, and fitting the view to that stretch alone
         // left the rest of the line off screen - a line picked to be looked
         // at, shown in part. So the ground the view must cover is the line's
-        // own, end to end, whatever the journeys on it ask for.
+        // own, end to end, whatever the journeys on it ask for. A card
+        // without trips has no journey to fit: the lines its header leaves
+        // (a departure and an arrival picked) are fitted the same way, or
+        // the view kept every line of the card, Cannes and Orléans at once
         const pickedFit = [];
-        if (!focusEntry && this._hiLine != null) {
+        const fitLines = this._hiLine != null ? new Set([this._hiLine]) : dset;
+        if (!focusEntry && fitLines?.size) {
             for (const src of this._depSources()) {
-                if (!src.def || src.def.idx !== this._hiLine) continue;
+                if (!src.def || !fitLines.has(src.def.idx)) continue;
                 const s = this._legSlice(src.def, src.st);
                 const stops = s.route?.stops;
                 if (!stops || s.oi == null || s.di == null || s.di <= s.oi) continue;
-                pickedFit.push(...this._subRoute(bent.get(this._hiLine) || s.route,
+                pickedFit.push(...this._subRoute(bent.get(src.def.idx) || s.route,
                     stops[s.oi].cum, stops[s.di].cum).line);
             }
         }
