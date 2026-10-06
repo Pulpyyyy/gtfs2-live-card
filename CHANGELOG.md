@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.4.0
+
+### Added
+
+- A run that ends at a connection short of the destination, or leaves from it without calling at the origin, says so. A journey can get off at more places than its destination and get on at more than its origin, a stop ticked in both being a connection. In the Lines view the arrival names the stop the run really ends at ("20:18 Victor Hugo") and the row says *does not go to De Gaulle*; a run leaving from the connection names it beside its departure and says *does not call at L'Indien*. Its duration is compared with the runs to that stop. With a line picked, the map draws the next departure's own stretch, the rest of the line dashed and grey. This needs `next_departures_destination_stop_id` from gtfs2 `refactor/architecture`.
+
+### Fixed
+
+- On a card without trips, the map fits the departure and the arrival picked in the header, from the origin to the destination of the lines it keeps. It used to keep every line of the card in view, Cannes and Orléans at once, the journey a dot.
+- A run that does not reach a journey's end, on a sensor getting off at several places, is no longer given an arrival worked out from the line's shape when gtfs2 writes no leg file. It is left out of the trip, as a run the leg file shows not calling there already was.
+
 ## 2.3.1
 
 ### Fixed
