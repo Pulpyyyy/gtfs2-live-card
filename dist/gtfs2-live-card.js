@@ -326,6 +326,9 @@ const RT_STALE = 45 * 60000;
 // a run the feed struck out stays on the board this long past its time,
 // struck through: the rider who came for the 17:42 reads why it is not there
 const STRUCK_KEEP = 5 * 60000;
+// lines further apart than this are two areas the map fits one at a time
+// (see _areaFit): two towns, not two ends of one network
+const AREA_GAP_M = 50000;
 
 // One geometry for every corner mark a badge can carry, because a badge can
 // carry four of them and marks of different sizes in different corners would
@@ -3190,6 +3193,24 @@ class Gtfs2LiveCard extends HTMLElement {
             const lr = this._legRouteOf(def);
             if (lr && holds(lr) > holds(route)) route = lr;
         }
+        // a shape the wrong way round: a route file drawn from a run of the
+        // other direction (one going Méridien to Gare SNCF, filed under the
+        // sensor going to Méridien) holds the sensor's two ends, its
+        // destination first, and read as it is made the journey the
+        // reverse one, Les Pins to Hôtel de Ville. The stops of the runs the
+        // sensor lists stand in, else none
+        const ko = placeKey(ostations[0] ?? at.origin_station_stop_name ?? meta.oname);
+        const kd = placeKey(dstations[0] ?? at.destination_station_stop_name ?? meta.dname);
+        const backwards = (r) => {
+            if (!r?.stops?.length || !ko || !kd || ko === kd) return false;
+            const ks = r.stops.map((x) => placeKey(x.name));
+            const fo = ks.indexOf(ko), ld = ks.lastIndexOf(kd);
+            return fo >= 0 && ld >= 0 && ld < fo;
+        };
+        if (backwards(route)) {
+            const lr = this._legRouteOf(def);
+            route = lr && !backwards(lr) ? lr : null;
+        }
         const ends = {
             oid: idOf(at.origin_station_stop_id) || meta.origin || "",
             oname: at.origin_station_stop_name ?? meta.oname ?? "",
@@ -5234,6 +5255,50 @@ class Gtfs2LiveCard extends HTMLElement {
     // shape calling there, so its pin survives a shape not read yet; the
     // destination only on its own shape, after the origin. An explicit
     // latitude/longitude in the config is intentional and always shows.
+    // The ground the view fits when nothing is picked: every line's shape
+    // and vehicles. Lines far apart - a card holding Cannes and Orléans -
+    // are areas of their own, and fitting them all showed the whole of
+    // France and no street of either. The view fits one area: the one
+    // nearest the card's latitude and longitude when it sets them, else the
+    // one with the most lines, the first listed on a tie. A line of another
+    // area is a badge away. [{x, y}]
+    _areaFit(all, stations, mPerU) {
+        const gap = AREA_GAP_M / mPerU;
+        const boxOf = (pts) => ({ x0: Math.min(...pts.map((p) => p.x)), x1: Math.max(...pts.map((p) => p.x)),
+            y0: Math.min(...pts.map((p) => p.y)), y1: Math.max(...pts.map((p) => p.y)) });
+        const apart = (a, b) => Math.hypot(Math.max(0, a.x0 - b.x1, b.x0 - a.x1), Math.max(0, a.y0 - b.y1, b.y0 - a.y1));
+        let areas = [];
+        for (const def of this._lineDefs()) {
+            const pts = all.filter((e) => e.def.idx === def.idx).map((e) => e.w);
+            const route = this._ld[def.idx]?.route;
+            if (route) pts.push(...route.line);
+            if (pts.length) areas.push({ first: def.idx, n: 1, pts, box: boxOf(pts) });
+        }
+        // two areas closer than the gap are one, until none is
+        for (let merged = true; merged;) {
+            merged = false;
+            for (let i = 0; i < areas.length && !merged; i++) {
+                for (let j = i + 1; j < areas.length && !merged; j++) {
+                    if (apart(areas[i].box, areas[j].box) > gap) continue;
+                    const a = areas[i], b = areas[j];
+                    const pts = [...a.pts, ...b.pts];
+                    areas[i] = { first: Math.min(a.first, b.first), n: a.n + b.n, pts, box: boxOf(pts) };
+                    areas = areas.filter((_, k) => k !== j);
+                    merged = true;
+                }
+            }
+        }
+        if (areas.length < 2) return [...all.map((e) => e.w), ...stations, ...areas.flatMap((a) => a.pts)];
+        const home = this._config.latitude != null && this._config.longitude != null
+            ? this._world(Number(this._config.latitude), Number(this._config.longitude)) : null;
+        const dist = (a) => apart(a.box, { x0: home.x, x1: home.x, y0: home.y, y1: home.y });
+        const pick = areas.reduce((b, a) => {
+            if (home) return dist(a) < dist(b) ? a : b;
+            return a.n > b.n || (a.n === b.n && a.first < b.first) ? a : b;
+        });
+        return [...pick.pts, ...stations.filter((s) => apart(pick.box, { x0: s.x, x1: s.x, y0: s.y, y1: s.y }) <= gap)];
+    }
+
     _stationPoints(topLi) {
         const pts = [];
         const seen = new Set();
@@ -5689,9 +5754,7 @@ class Gtfs2LiveCard extends HTMLElement {
                 // there fits its own ground all the same, not the network's
                 pts = [...pickedFit, ...stations];
             } else {
-                pts = all.map((e) => e.w);
-                pts.push(...stations);
-                for (const s of this._ld) if (s.route) pts.push(...s.route.line);
+                pts = this._areaFit(all, stations, mPerU);
             }
             let minX = Math.min(...pts.map((p) => p.x)), maxX = Math.max(...pts.map((p) => p.x));
             let minY = Math.min(...pts.map((p) => p.y)), maxY = Math.max(...pts.map((p) => p.y));
