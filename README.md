@@ -37,7 +37,7 @@ A Lovelace card for the [gtfs2](https://github.com/vingerha/gtfs2) Home Assistan
 
 - Home Assistant with the [gtfs2](https://github.com/vingerha/gtfs2) integration and at least one start/stop sensor.
 - **gtfs2 0.5.9.8 or later** exports each line's shape and ordered stops, which the map and the journey chaining need. The card finds these files on its own. On an older gtfs2 the map falls back on each vehicle's recent path, dashed.
-- **Live vehicles** need a GTFS-RT source with the `vehicle_positions > local file` output enabled. Without realtime the card still shows the board, the shapes and the stops.
+- **Live vehicles** need a GTFS-RT vehicle positions feed: on [Pulpyyyy/gtfs2](https://github.com/Pulpyyyy/gtfs2/wiki/Data-sources#realtime-feeds) it is set once on the source's *Realtime feeds* screen, on a stock gtfs2 in each sensor's realtime options. Without realtime the card still shows the board, the shapes and the stops.
 
 Some features read attributes that gtfs2 does not publish yet. They are written and proposed upstream, and run today on the `refactor/architecture` branch of [Pulpyyyy/gtfs2](https://github.com/Pulpyyyy/gtfs2/tree/refactor/architecture). On a stock gtfs2 these features simply do not show; nothing breaks.
 
