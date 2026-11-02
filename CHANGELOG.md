@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.5.0
+
+### Added
+
+- A view of your own on the map. Move it by hand and a padlock appears: tap it to keep that view for what is picked (nothing, a line, a journey). It is kept in your Home Assistant profile, so it follows you from one device to another, and framed again at the card's width. Tap the shut padlock to let it go. Without a view kept, the map frames itself as before.
+- Times are read in each line's own time zone (its agency's, else Home Assistant's) and written in your profile's time format: 12 or 24 hours, your language's habit, or your system's. A card whose lines keep different hours writes the zone after each time (*PST*, *UTC−8*).
+
+### Fixed
+
+- With nothing picked, a card whose lines sit in towns far apart fits the map to one town, the one nearest the card's `latitude` and `longitude`, else the one with the most lines, instead of the whole country.
+- A route file drawn from a run of the other direction no longer turns a journey into its reverse.
+- A `card_mod` style set on the card holds on a first load and after a change of config.
+- After an update, the card reads its own release's language files, not the last one's kept in the browser's cache, whose new strings showed as their keys.
+- The recenter button shows only after the map was moved by hand.
+
 ## 2.4.0
 
 ### Added
