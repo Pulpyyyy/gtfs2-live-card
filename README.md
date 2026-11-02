@@ -24,10 +24,10 @@ A Lovelace card for the [gtfs2](https://github.com/vingerha/gtfs2) Home Assistan
 
 ## Features
 
-- **Departures board**: scheduled and realtime times from one or several gtfs2 sensors on one board, delays, day tags beyond today, arrival time and journey duration, as a list or as a timetable.
+- **Departures board**: scheduled and realtime times from one or several gtfs2 sensors on one board, in each line's own time zone and your profile's time format, delays, day tags beyond today, arrival time and journey duration, as a list or as a timetable.
 - **Journeys**: say where you go and the card finds the ways on your lines, changes included, on foot or at the same stop, and the return with them. The board shows every run you can actually take, first to leave first, and a timeline shows each change.
 - **Two ways to read the header**: *Lines*, one badge per line; *Journeys*, where you are leaving from, where you can go from there and how.
-- **Line map**: a vector base map that follows the Home Assistant theme, the route shapes and their stops, the realtime vehicles with their mode and heading, and the journey you picked drawn stop by stop.
+- **Line map**: a vector base map that follows the Home Assistant theme, the route shapes and their stops, the realtime vehicles with their mode and heading, and the journey you picked drawn stop by stop. The view frames itself, or keeps the one you chose for each pick.
 - **Vehicle tracking**: tap a vehicle to follow it, with its terminus, its next stop and its speed.
 - **Honest about the feed**: a cancelled run or one not stopping stays on the board, struck through. Operator alerts sit on the runs they name. A line that runs neither today nor for days says when it is back, and a realtime source that goes quiet is flagged instead of freezing its vehicles on the map.
 - **Minimal YAML**: a list of sensors is enough. The line name, its official colour, its mode, its files and its stops all come from the sensor. They are remembered, so a line out of service at night keeps its identity.
@@ -198,6 +198,8 @@ A chip starts with a plate per line it rides, in riding order, each with its num
 
 Each row gives the departure time, a realtime mark when the feed confirms it, the line and its destination, a countdown and a delay chip (*on time*, *+2 min*). A realtime time is paired with its own trip's scheduled slot, and the scheduled time shows struck through beside it when they differ. Departures beyond today carry their day.
 
+Times are read where the line runs, in its agency's time zone (Home Assistant's when the feed names none), so a bus in Caen leaves at 16:01 wherever you look from. They are written the way your Home Assistant profile asks: 12 or 24 hours, your language's habit, or your system's. A card whose lines keep different hours, San Francisco and Paris, writes the zone after each time, in your language's words (*PST*, *UTC−8*), since its board mixes them in time order.
+
 - `show_duration: true` adds the arrival time and the journey duration to each row ("→ 07:07 · 1 h 04").
 - In the Lines view the board is a timetable: line, departure (with its realtime mark and delay), arrival, duration and destination columns, sorted by departure time, under a line giving the next departure. Each duration is coloured in three steps against the fastest run to the same destination. On a wide card the columns spread over its width; on a phone the destination wraps rather than scrolling sideways. The Journeys view is a list.
 - A departure ridden by another mode than its line, a replacement coach on a train line, shows that mode's glyph beside its time.
@@ -256,10 +258,12 @@ A vector base map ([MapLibre](https://maplibre.org/), [VersaTiles](https://versa
 
 - **Mouse**: drag to pan, **Ctrl + wheel** to zoom (the plain wheel keeps scrolling the page), double-click to zoom in around the pointer.
 - **Touch**: two fingers to pan and pinch (one finger keeps scrolling the page).
-- **Buttons**: zoom in and out, recenter after a manual move, and *Overview* while tracking.
+- **Buttons**: zoom in and out, recenter after a manual move, *Overview* while tracking, and a padlock to keep a view.
 - Line badges, destination chips, section heads and vehicles are keyboard operable (Tab, then Enter).
 
 **A journey** is drawn stop by stop, the rest of its lines faint. When the run shown, the one open on the board or the next departure of the line picked, leaves past the journey's start or ends short of its end, the part it does not ride is dashed and grey (see [Runs that end short or start part way](#runs-that-end-short-or-start-part-way)).
+
+**A view of your own**: the map frames itself on what is picked, the lines, a line or a journey. Move it by hand and a padlock appears under the buttons: tap it to keep that view. The view is kept for what is picked at that moment, so nothing picked, each line and each journey can have their own, and the map comes back to it on reload, after tracking a vehicle, and with recenter or *Overview*. Move a kept view and the padlock opens again: tap it to keep the new one. Tap a shut padlock to let the view go, and the map frames itself again. A view is kept as the ground it shows, so a phone and a wide screen show the same streets, and in your Home Assistant profile, so it follows you from one device to another. Without a view kept, the map frames itself as it always did.
 
 **Tracking**: tap a vehicle to follow it. The map zooms onto it, the route already travelled turns dashed and grey, and a popup gives the vehicle's terminus, its next stop and its estimated speed. The view follows the vehicle at every refresh. The popup's cross, `Escape` or a tap on the map background stop tracking and leave the map where it is. *Overview* stops tracking and resets the view, and also drops the destination picked. When the vehicle leaves the feed, the map goes back to the whole view and says so.
 
@@ -320,7 +324,7 @@ An entry of `lines` is a sensor id, or an object with these keys:
 | `positions_url` | The vehicle positions file (default: named by the sensor, or derived from its route and direction the way gtfs2 names it). |
 | `route_url` | The route shape file (default: likewise). |
 
-Explicit values always win over derived ones. The collapsed panes, the view, the layout and the picks of the header are remembered per card and per browser.
+Explicit values always win over derived ones. The collapsed panes, the reading of the header (*Lines* or *Journeys*), the layout and the picks of the header are remembered per card and per browser. The map views kept with the padlock are remembered per card and per Home Assistant user (see [The map](#the-map)).
 
 ## Visual editor
 

@@ -962,6 +962,10 @@ function fetchJsonShared(url, maxAgeMs) {
 }
 
 const ICONS = {
+    // the map's padlock: shut, a view is kept for what is picked; open, the
+    // map frames itself and a click keeps the view it shows
+    lock: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>`,
+    lockOpen: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 7.8-1.3"></path></svg>`,
     chevronDown: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>`,
     chevronRight: `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>`,
     live: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M4 11a9 9 0 0 1 9 9"></path><path d="M4 4a16 16 0 0 1 16 16"></path><circle cx="5" cy="19" r="1.8" fill="currentColor" stroke="none"></circle></svg>`,
@@ -1027,6 +1031,8 @@ class Gtfs2LiveCard extends HTMLElement {
         this._viewBox = null;             // [x, y, w, h] in world units (origin-shifted)
         this._origin = null;              // world-unit offset subtracted before rendering
         this._manual = false;             // user panned/zoomed: auto-fit stops overriding
+        this._views = {};                 // views kept with the padlock: selection → [w, s, e, n]
+        this._profileKey = null;          // the profile entry they are read from (see _loadProfileViews)
         this._pointers = new Map();       // active pointers on the map (pan/pinch)
         this._pinch = null;               // {dist, mid, vb} at pinch start
         this._multi = false;              // two fingers touched the map: the release is not a tap
@@ -1139,8 +1145,14 @@ class Gtfs2LiveCard extends HTMLElement {
         this._from = null;
         this._dest = null;
         this._way = null;
+        this._views = {};
+        // another card's lines: their views are read from the profile again
+        if (this._profileKey !== this._storageKey()) { this._dropProfileViews(); this._profileKey = null; }
         try {
             const saved = JSON.parse(localStorage.getItem(this._storageKey()) || "{}");
+            // the browser's copy of the views the profile keeps, for the
+            // first frame: the profile's own answer replaces it
+            if (saved.views && typeof saved.views === "object" && !Array.isArray(saved.views)) this._views = saved.views;
             if (typeof saved.dep === "boolean") this._collapsed.dep = saved.dep;
             if (typeof saved.map === "boolean") this._collapsed.map = saved.map;
             // what the destination header showed last: checked against the
@@ -1164,6 +1176,9 @@ class Gtfs2LiveCard extends HTMLElement {
         const prev = this._hass;
         this._hass = hass;
         setClock(hass);
+        // the padlock's views, read from the profile once the card has a
+        // connection (and again after a new config or a return to the page)
+        if (this._profileKey == null && this._config && hass?.connection) this._loadProfileViews();
         // hass is reassigned on every state change in the whole HA instance:
         // skip all work unless one of our entities, the theme or the locale
         // actually changed
@@ -1276,8 +1291,118 @@ class Gtfs2LiveCard extends HTMLElement {
     // the collapsed panes and the destination header's picks, per user
     _persistCollapsed() {
         const view = { ...this._collapsed, from: this._from, dest: this._dest, way: this._way,
-                       mode: this._modePick };
+                       mode: this._modePick, views: this._views };
         try { localStorage.setItem(this._storageKey(), JSON.stringify(view)); } catch (e) { /* ignore */ }
+    }
+
+    /* The padlock. A view kept is kept for what is picked, since the map
+     * frames each pick its own way: nothing, a line, a departure and an
+     * arrival, a way. With none kept for it, the map frames itself as it
+     * always did. A view is kept as the ground it shows, west, south, east
+     * and north, and framed again at the card's width: a phone and a wide
+     * screen show the same streets. */
+    _viewSel() {
+        const d = this._hiLine != null ? this._lineDefs().find((x) => x.idx === this._hiLine) : null;
+        const line = d ? d.entity || d.positions_url || String(d.idx) : "";
+        if (this._modeOf() !== "trips") return `lines|${line}`;
+        const v = this._destView();
+        return ["trips", v?.from ?? "", v?.dest ?? "", v?.way ?? "", line].join("|");
+    }
+
+    // what the padlock's words say the view is kept for
+    _viewScope() {
+        const d = this._hiLine != null ? this._lineDefs().find((x) => x.idx === this._hiLine) : null;
+        if (d) return this._t("view_line", { l: this._lineLabelOf(d) });
+        const v = this._modeOf() === "trips" ? this._destView() : null;
+        return this._t(v && (this._from || v.dest || v.way) ? "view_pick" : "view_none");
+    }
+
+    // the ground the map shows, [west, south, east, north] to a metre or so
+    _visibleBox() {
+        const vb = this._viewBox, O = this._origin;
+        const svg = this.shadowRoot.querySelector(".map-wrap svg");
+        if (!vb || !O || !svg) return null;
+        const W = svg.clientWidth || vb[2], H = svg.clientHeight || vb[3];
+        // the viewBox covers the frame, its overflow cut (slice): what shows
+        const s = Math.max(W / vb[2], H / vb[3]);
+        const cx = O.x + vb[0] + vb[2] / 2, cy = O.y + vb[1] + vb[3] / 2;
+        const hw = W / s / 2, hh = H / s / 2;
+        const lon = (x) => (x / WORLD) * 360 - 180;
+        const r = (v) => Math.round(v * 1e5) / 1e5;
+        const box = [r(lon(cx - hw)), r(this._latOf(cy + hh)), r(lon(cx + hw)), r(this._latOf(cy - hh))];
+        return box.every(Number.isFinite) ? box : null;
+    }
+
+    // The views live in the user's Home Assistant profile, so they follow
+    // the user from the phone to the wall tablet and outlive a browser's
+    // data; the browser keeps a copy for the first frame. Read once per
+    // card, and kept current where Home Assistant says when they change.
+    // Views kept in this browser before the profile held any are handed to
+    // it, not dropped
+    _loadProfileViews() {
+        const conn = this._hass?.connection;
+        const key = this._storageKey();
+        if (!conn || this._profileKey === key) return;
+        this._profileKey = key;
+        const take = (value) => {
+            if (this._profileKey !== key) return;
+            if (value == null) {
+                if (Object.keys(this._views).length) this._writeProfileViews(() => this._views);
+                return;
+            }
+            const views = typeof value === "object" && !Array.isArray(value) ? value : {};
+            if (JSON.stringify(views) === JSON.stringify(this._views)) return;
+            this._views = views;
+            this._persistCollapsed();
+            if (!this._manual && !this._focus) this._scheduleRerender();
+        };
+        const get = () => conn.sendMessagePromise({ type: "frontend/get_user_data", key })
+            .then((r) => take(r?.value)).catch(() => {});
+        // an older Home Assistant cannot be listened to: read once
+        conn.subscribeMessage((ev) => take(ev?.value), { type: "frontend/subscribe_user_data", key })
+            .then((unsub) => {
+                if (this._profileKey === key) this._profileUnsub = unsub;
+                else unsub();
+            })
+            .catch(get);
+    }
+
+    _dropProfileViews() {
+        if (this._profileUnsub) {
+            try { this._profileUnsub(); } catch (e) { /* the connection is gone */ }
+            this._profileUnsub = null;
+        }
+    }
+
+    // the profile's views read again just before writing, so a view kept
+    // meanwhile on another device is not written over
+    _writeProfileViews(change) {
+        const conn = this._hass?.connection;
+        if (!conn) return;
+        const key = this._storageKey();
+        conn.sendMessagePromise({ type: "frontend/get_user_data", key })
+            .then((r) => {
+                const cur = r?.value && typeof r.value === "object" && !Array.isArray(r.value) ? { ...r.value } : {};
+                return conn.sendMessagePromise({ type: "frontend/set_user_data", key, value: change(cur) });
+            })
+            .catch(() => {});
+    }
+
+    // Shown only when it has something to do: after a move by hand, open,
+    // to keep the view; on a view kept, shut, to go back to the map's own
+    // framing. Hidden while a vehicle is tracked
+    _paintLock(btn) {
+        const kept = !!this._views[this._viewSel()];
+        const shut = kept && !this._manual;
+        btn.hidden = !!this._focus || (!this._manual && !kept);
+        if (btn.hidden) return;
+        btn.classList.toggle("on", shut);
+        btn.setAttribute("aria-pressed", String(shut));
+        const label = this._t(shut ? "view_auto" : "view_keep", { s: this._viewScope() });
+        btn.title = label;
+        btn.setAttribute("aria-label", label);
+        const icon = shut ? "lock" : "lockOpen";
+        if (btn.dataset.icon !== icon) { btn.dataset.icon = icon; btn.innerHTML = ICONS[icon]; }
     }
 
     _remember(entity, patch) {
@@ -1594,6 +1719,9 @@ class Gtfs2LiveCard extends HTMLElement {
         if (this._anim) cancelAnimationFrame(this._anim);
         if (this._rerenderTimer) { clearTimeout(this._rerenderTimer); this._rerenderTimer = null; }
         if (this._boardTimer) { clearTimeout(this._boardTimer); this._boardTimer = null; }
+        // read again, and listened to again, when the card is back
+        this._dropProfileViews();
+        this._profileKey = null;
         if (this._hintT) { clearTimeout(this._hintT); this._hintT = null; }
         if (this._tipT) { clearTimeout(this._tipT); this._tipT = null; }
         if (this._badgeTipT) { clearTimeout(this._badgeTipT); this._badgeTipT = null; }
@@ -1894,6 +2022,27 @@ class Gtfs2LiveCard extends HTMLElement {
         } else if (action === "recenter") {
             this._manual = false;
             this._renderMap(true);
+        } else if (action === "view-lock") {
+            // shut: the view kept for what is picked is let go, and the map
+            // frames itself again. Open: the view shown is kept, in place of
+            // one kept before for the same pick
+            const sel = this._viewSel();
+            const views = { ...this._views };
+            if (views[sel] && !this._manual) {
+                delete views[sel];
+                this._views = views;
+                this._writeProfileViews((cur) => { delete cur[sel]; return cur; });
+                this._renderMap(true);
+            } else {
+                const box = this._visibleBox();
+                if (!box) return;
+                views[sel] = box;
+                this._views = views;
+                this._manual = false;
+                this._writeProfileViews((cur) => ({ ...cur, [sel]: box }));
+                this._renderMap(false);
+            }
+            this._persistCollapsed();
         } else if (action === "mode") {
             // changing the reading drops what the other reading had picked:
             // a destination means nothing on a board of lines, and a line
@@ -3549,7 +3698,7 @@ class Gtfs2LiveCard extends HTMLElement {
     // the strip of alerts under the board.
     _viasHtml(list) {
         return list.map((v) => `<span class="via-t">${this._alertMarkHtml(this._stopAlertsAt(v.li, v.name))}`
-            + `${esc(v.name)} ${this._clockHtml(v.when, v.zone) || "—"}</span>`).join(" · ");
+            + `${esc(v.name)} ${this._clockHtml(v.when, v.zone) || "-"}</span>`).join(" · ");
     }
 
     // the plans of the journeys shown (see _visibleJourneys)
@@ -4605,7 +4754,7 @@ class Gtfs2LiveCard extends HTMLElement {
                 : r.rt && r.theo && Math.abs(r.time - r.theo) >= 60000
                 ? this._t("scheduled_at", { t: this._hm(r.theo, r.def?.zone) })
                 : this._t(r.rt ? "realtime" : "no_rt_yet");
-            let arr = "—", dur = "—";
+            let arr = "-", dur = "-";
             if (r.durMin != null && !r.struck) {
                 const at = new Date(r.time.getTime() + r.durMin * 60000);
                 // the arrival names its day only when it differs from the
@@ -4620,7 +4769,7 @@ class Gtfs2LiveCard extends HTMLElement {
                 dur = `<b${fast ? ` class="dur-ok"` : ""}>${fmtDur(r.durMin)}</b>`;
             }
             const line = lined
-                ? `<td class="fit">${r.def ? `<span class="row-badge" style="background:${esc(this._rowColor(r))};color:${inkOn(this._rowColor(r))}">${esc(this._rowLabel(r))}</span>` : "—"}</td>`
+                ? `<td class="fit">${r.def ? `<span class="row-badge" style="background:${esc(this._rowColor(r))};color:${inkOn(this._rowColor(r))}">${esc(this._rowLabel(r))}</span>` : "-"}</td>`
                 : "";
             // the last column takes the slack: the destination, or nothing.
             // A run that does not serve the sensor's ends says so there, in
@@ -4629,9 +4778,9 @@ class Gtfs2LiveCard extends HTMLElement {
             // row (narrow), or the row's rule stops short of the others
             const note = this._rowEndsNote(e);
             const last = note ? `<td class="${showDest ? "dest-c" : "note-c"}"><span class="jbroken">${note}</span></td>`
-                : showDest ? `<td class="dest-c">${esc(destOf(r)) || "—"}</td>` : `<td></td>`;
+                : showDest ? `<td class="dest-c">${esc(destOf(r)) || "-"}</td>` : `<td></td>`;
             const rv = this._rowVias(r, vias);
-            const via = showVia ? `<td class="fit vias">${rv.length ? this._viasHtml(rv) : "—"}</td>` : "";
+            const via = showVia ? `<td class="fit vias">${rv.length ? this._viasHtml(rv) : "-"}</td>` : "";
             // the same words again, under the times, for a narrow card: on a
             // phone seven columns left the stops on the way two letters of
             // width ("Ras / pail / 06:0 / 3"). There the two columns of words
@@ -4720,7 +4869,7 @@ class Gtfs2LiveCard extends HTMLElement {
                 : j.rt && j.delay != null && Math.abs(j.delay) >= 1
                 ? `<span class="dly ${j.delay > 0 ? "st-late" : "st-early"}">${j.delay > 0 ? "+" : ""}${j.delay} min</span>` : "";
             return sep + `<tr>${tds}<td class="dly-c fit">${dly}</td>`
-                + `<td class="num fit">${j.arr ? `<b>${fmtDur(clockMins(j.dep, j.arr))}</b>` : "—"}</td><td></td></tr>`;
+                + `<td class="num fit">${j.arr ? `<b>${fmtDur(clockMins(j.dep, j.arr))}</b>` : "-"}</td><td></td></tr>`;
         }).join("");
         const first = journeys[0];
         const summary = `<div class="board-next">${this._t("next_dep_in", {
@@ -5679,6 +5828,7 @@ class Gtfs2LiveCard extends HTMLElement {
                     <button class="map-ctrl-btn" data-action="zoom-in" aria-label="${esc(this._t("zoom_in"))}">+</button>
                     <button class="map-ctrl-btn" data-action="zoom-out" aria-label="${esc(this._t("zoom_out"))}">−</button>
                     <button class="map-ctrl-btn" data-action="recenter" aria-label="${esc(this._t("recenter"))}" title="${esc(this._t("recenter"))}" hidden>⌖</button>
+                    <button class="map-ctrl-btn map-lock" data-action="view-lock" aria-pressed="false" hidden></button>
                 </div>
                 <div class="map-foot">
                     <div class="map-scale"><i></i><span></span></div>
@@ -5849,6 +5999,18 @@ class Gtfs2LiveCard extends HTMLElement {
             if (h < w * frameAspect) { const g = (w * frameAspect - h) / 2; minY -= g; h = w * frameAspect; }
             else if (w < h / frameAspect) { const g = (h / frameAspect - w) / 2; minX -= g; w = h / frameAspect; }
             target = [minX, minY, w, h];
+            // a view kept with the padlock for what is picked replaces the
+            // map's own framing: its ground, whole, at the card's width
+            const kept = this._views[this._viewSel()];
+            if (Array.isArray(kept) && kept.length === 4 && kept.every(Number.isFinite)) {
+                const nw = this._world(kept[3], kept[0]), se = this._world(kept[1], kept[2]);
+                let kx = nw.x, ky = nw.y, kw = se.x - nw.x, kh = se.y - nw.y;
+                if (kw > 0 && kh > 0) {
+                    if (kh < kw * frameAspect) { ky -= (kw * frameAspect - kh) / 2; kh = kw * frameAspect; }
+                    else { kx -= (kh / frameAspect - kw) / 2; kw = kh / frameAspect; }
+                    target = [kx, ky, kw, kh];
+                }
+            }
         }
 
         // stable origin keeps SVG coordinates small (float precision) without
@@ -6227,6 +6389,8 @@ class Gtfs2LiveCard extends HTMLElement {
         if (btnUnfocus) btnUnfocus.hidden = !this._focus;
         const btnRecenter = body.querySelector('.map-ctrl-btn[data-action="recenter"]');
         if (btnRecenter) btnRecenter.hidden = !this._manual;
+        const btnLock = body.querySelector('.map-ctrl-btn[data-action="view-lock"]');
+        if (btnLock) this._paintLock(btnLock);
         const attrib = body.querySelector(".map-attrib");
         if (attrib) {
             const newestAt = Math.max(0, ...this._ld.map((s) => s.sigAt || 0));
@@ -7356,6 +7520,10 @@ class Gtfs2LiveCard extends HTMLElement {
         .map-tip[hidden] { display: none; }
         .map-btn { position: absolute; top: 8px; left: 8px; border: none; border-radius: 12px; min-height: 36px; padding: 7px 12px; font-size: 12px; font-weight: 500; font-family: inherit; background: var(--card-background-color, #fff); color: var(--primary-text-color); cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
         .map-ctrl { position: absolute; top: 8px; right: 8px; display: flex; flex-direction: column; gap: 6px; }
+        .map-ctrl-btn.map-lock.on { background: var(--primary-color); color: var(--text-primary-color, #fff); }
+        /* the class sets display, which beats the browser's rule for
+           [hidden]: the padlock and recenter showed as empty buttons */
+        .map-ctrl-btn[hidden] { display: none; }
         .map-ctrl-btn { width: 36px; height: 36px; border: none; border-radius: 9px; background: var(--card-background-color, #fff); color: var(--primary-text-color); font-size: 18px; font-weight: 600; font-family: inherit; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.2); display: flex; align-items: center; justify-content: center; padding: 0; }
         .map-foot { position: absolute; left: 8px; right: 8px; bottom: 6px; display: flex; flex-wrap: wrap;
             align-items: flex-end; justify-content: space-between; gap: 4px 8px; pointer-events: none; }
