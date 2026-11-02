@@ -763,10 +763,55 @@ const parseTs = (v) => {
     return d;
 };
 
-// one formatter for the page: toLocaleTimeString builds a new one at each
-// call, and a board prints a clock some forty times
-const HM_FMT = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" });
-const fmtHM = (d) => HM_FMT.format(d);
+// A clock is read where the bus runs and written the way its reader wants.
+// Its zone is the line's (the feed's agency_timezone, which every gtfs2
+// publishes), else Home Assistant's: someone in New York looking at a bus
+// in Caen sees 16:01, not 10:01. Its form is the reader's profile: Home
+// Assistant's time format, 12 or 24 hours, else the convention of the
+// profile's language, else the browser's. Every card of the page shares
+// that profile, so the form is the page's, set by each card from its hass.
+const CLOCK = { lang: undefined, tf: "language", zone: undefined };
+const setClock = (hass) => {
+    const tf = hass?.locale?.time_format || "language";
+    const lang = tf === "system" ? undefined : hass?.locale?.language || hass?.language || undefined;
+    const zone = hass?.config?.time_zone || undefined;
+    if (lang === CLOCK.lang && tf === CLOCK.tf && zone === CLOCK.zone) return false;
+    Object.assign(CLOCK, { lang, tf, zone });
+    return true;
+};
+
+// one formatter per zone and form: toLocaleTimeString builds a new one at
+// each call, and a board prints a clock some forty times. A zone or a
+// language the browser does not know falls back on what it does
+const FMTS = new Map();
+const clockFmt = (zone, opts) => {
+    const z = zone || CLOCK.zone;
+    const key = `${z || ""}|${CLOCK.lang || ""}|${CLOCK.tf}|${JSON.stringify(opts)}`;
+    let f = FMTS.get(key);
+    if (f) return f;
+    const o = { ...opts };
+    if ("hour" in o) {
+        if (CLOCK.tf === "12") o.hour12 = true;
+        else if (CLOCK.tf === "24") o.hourCycle = "h23";
+    }
+    for (const [lang, timeZone] of [[CLOCK.lang, z], [undefined, z], [CLOCK.lang, CLOCK.zone], [undefined, undefined]]) {
+        try { f = new Intl.DateTimeFormat(lang || [], { ...o, ...(timeZone ? { timeZone } : {}) }); break; } catch (e) { f = null; }
+    }
+    FMTS.set(key, f);
+    return f;
+};
+// named: the zone said after the clock, in the reader's words ("PST" in
+// American English, "UTC−8" in French), for a card whose lines run in
+// zones of their own (see _hm)
+const fmtHM = (d, zone, named) => clockFmt(zone, { hour: "2-digit", minute: "2-digit", ...(named ? { timeZoneName: "short" } : {}) }).format(d);
+// the calendar day a moment falls on in a zone, as a day count: two of them
+// subtract into "tomorrow" or "in three days" without a midnight of the
+// browser's own in between
+const dayNum = (d, zone) => {
+    const p = clockFmt(zone, { year: "numeric", month: "numeric", day: "numeric", calendar: "gregory", numberingSystem: "latn" })
+        .formatToParts(d).reduce((o, x) => ({ ...o, [x.type]: Number(x.value) }), {});
+    return Math.round(Date.UTC(p.year, p.month - 1, p.day) / 86400000);
+};
 
 // journey time, the way a timetable prints it: "1 h 04", "12 min"
 const fmtDur = (min) => {
@@ -857,12 +902,13 @@ const luminance = (hex) => {
 };
 
 // "tomorrow" / weekday tag for departures beyond today (include_tomorrow)
-const dayTag = (lang, d, now) => {
-    const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-    const diff = Math.round((day(d) - day(now)) / 86400000);
+// counted in the line's zone, like its clocks: a BART run is "tomorrow"
+// after midnight in San Francisco, not after midnight in Paris
+const dayTag = (lang, d, now, zone) => {
+    const diff = dayNum(d, zone) - dayNum(now, zone);
     if (diff <= 0) return "";
     if (diff === 1) return tr(lang, "tomorrow");
-    return d.toLocaleDateString(lang, { weekday: "long" });
+    try { return d.toLocaleDateString(lang, { weekday: "long", timeZone: zone || CLOCK.zone }); } catch (e) { return d.toLocaleDateString(lang, { weekday: "long" }); }
 };
 
 const haversine = (a, b) => {
@@ -1117,12 +1163,17 @@ class Gtfs2LiveCard extends HTMLElement {
     set hass(hass) {
         const prev = this._hass;
         this._hass = hass;
+        setClock(hass);
         // hass is reassigned on every state change in the whole HA instance:
         // skip all work unless one of our entities, the theme or the locale
         // actually changed
         if (prev && this._built && this._config) {
             const themeFlip = !!prev.themes?.darkMode !== !!hass.themes?.darkMode;
-            const langFlip = (prev.locale?.language || "") !== (hass.locale?.language || "");
+            // the clock's form or Home Assistant's zone changed: every
+            // clock of the card is written again, as for a language
+            const langFlip = (prev.locale?.language || "") !== (hass.locale?.language || "")
+                || (prev.locale?.time_format || "") !== (hass.locale?.time_format || "")
+                || (prev.config?.time_zone || "") !== (hass.config?.time_zone || "");
             if (!themeFlip && !langFlip
                 && this._watchedEntities().every((id) => prev.states?.[id] === hass.states?.[id])) {
                 // nothing we derive from has changed: carry the memoized line
@@ -1169,6 +1220,31 @@ class Gtfs2LiveCard extends HTMLElement {
 
     _lang() {
         return resolveLang(this._hass);
+    }
+
+    // A clock as the card writes it, in its line's zone. A card whose lines
+    // keep different hours right now (BART and Paris; not Paris and
+    // Brussels) names the zone after every clock: its board is sorted by
+    // the moment, and 07:01 beside 16:01 would read as a mistake
+    _hm(d, zone) {
+        return fmtHM(d, zone, this._mixedZones());
+    }
+
+    _mixedZones() {
+        const defs = this._lineDefs();
+        const now = new Date();
+        const key = `${CLOCK.zone}|${CLOCK.lang}|${defs.map((d) => d.zone || "").join(",")}|${Math.floor(now / 3600000)}`;
+        if (this._zonesKey === key) return this._zonesMixed;
+        const said = new Set(defs.map((d) => fmtHM(now, d.zone, true).replace(fmtHM(now, d.zone), "")));
+        this._zonesKey = key;
+        this._zonesMixed = said.size > 1;
+        return this._zonesMixed;
+    }
+
+    // the zone of a journey's clocks (see fmtHM): its first line's. The
+    // lines a journey changes between run in one place, so in one zone
+    _jZone(j) {
+        return j?.plan?.legs?.[0]?.def?.zone || undefined;
     }
 
     /* True once this card's strings are in, and the gate every render waits
@@ -1331,6 +1407,11 @@ class Gtfs2LiveCard extends HTMLElement {
             // of season). Kept per line so the badge can mark it.
             d.nextIn = at ? attrVal(at, "next_service_in_days") : null;
             d.nextDate = at ? attrVal(at, "next_service_date") : null;
+            // the zone the line's clocks are read in: its agency's, which
+            // the sensor publishes with the rest of the agency record.
+            // None, and Home Assistant's own is used (see fmtHM)
+            const zone = attrVal(at, "agency_agency_timezone");
+            d.zone = zone || cached?.zone || null;
             // the sensor already carries the right mdi icon for its route_type
             const mdi = attrVal(at, "icon");
             d.icon = mdi || cached?.icon || MDI_DEFAULTS[d.mode]?.[0] || "mdi:bus";
@@ -1341,6 +1422,7 @@ class Gtfs2LiveCard extends HTMLElement {
                 if (rc) patch.rc = rc;
                 if (rtype != null) patch.mode = d.mode;
                 if (mdi) patch.icon = mdi;
+                if (zone) patch.zone = zone;
                 if (Object.keys(patch).length) this._remember(d.entity, patch);
             }
             // a train sensor riding several lines (K8+, P8 and K6+ from
@@ -1902,7 +1984,7 @@ class Gtfs2LiveCard extends HTMLElement {
         return Array.isArray(rta) && rta.some((v) => {
             const t = parseTs(v);
             return t && t.getTime() > nowMs - 60000
-                && t.toDateString() === new Date(nowMs).toDateString();
+                && dayNum(t, d.zone) === dayNum(new Date(nowMs), d.zone);
         });
     }
 
@@ -2792,8 +2874,8 @@ class Gtfs2LiveCard extends HTMLElement {
                 const plates = lds.flatMap((d) => this._lineLabelsOf(d).map((l) => `<span class="dplate" style="background:${esc(this._lineColorOf(d, l))};color:${inkOn(this._lineColorOf(d, l))}">`
                     + `<span class="n">${esc(l)}</span><span class="band">${svg(d.mode || "bus", 13)}</span></span>`)).join("");
                 const first = runs[0];
-                const tag = first ? dayTag(lang, first.dep, now) : "";
-                const clock = first ? `${tag ? tag + " " : ""}${fmtHM(first.dep)}` : "";
+                const tag = first ? dayTag(lang, first.dep, now, this._jZone(first)) : "";
+                const clock = first ? `${tag ? tag + " " : ""}${this._hm(first.dep, this._jZone(first))}` : "";
                 // no run: why, as the board says it - a line resting until
                 // Monday, a change waiting too long - rather than a dash
                 const why = first ? "" : this._journeyIdle({ plans: wj.map((ji) => this._journeyPlan(ji, m.entries[ji])).filter(Boolean) }).msg;
@@ -3457,7 +3539,7 @@ class Gtfs2LiveCard extends HTMLElement {
     _rowVias(r, vias) {
         if (!r.def || r.struck) return [];
         const list = vias.get(r.def.idx) || [];
-        return list.map(({ p, leg }) => ({ name: p.name || "", when: this._rideTime(p, { leg, row: r }), li: leg.def.idx }));
+        return list.map(({ p, leg }) => ({ name: p.name || "", when: this._rideTime(p, { leg, row: r }), li: leg.def.idx, zone: leg.def.zone }));
     }
 
     // one departure's stops on the way, as the board prints them: the
@@ -3467,7 +3549,7 @@ class Gtfs2LiveCard extends HTMLElement {
     // the strip of alerts under the board.
     _viasHtml(list) {
         return list.map((v) => `<span class="via-t">${this._alertMarkHtml(this._stopAlertsAt(v.li, v.name))}`
-            + `${esc(v.name)} ${this._clockHtml(v.when) || "—"}</span>`).join(" · ");
+            + `${esc(v.name)} ${this._clockHtml(v.when, v.zone) || "—"}</span>`).join(" · ");
     }
 
     // the plans of the journeys shown (see _visibleJourneys)
@@ -3748,20 +3830,22 @@ class Gtfs2LiveCard extends HTMLElement {
     // the sensor's list reaches, since that - not the service - is the limit
     _laterNote(later) {
         const l = esc(this._lineLabelOf(later.leg.def));
-        const tt = later.tt;
-        if (tt && tt.next) return this._t("tt_next", { l, d: this._fmtDay(tt.next) });
-        if (tt && tt.until) return this._t("tt_until", { l, d: this._fmtDay(new Date(`${tt.until}T12:00:00`), true) });
+        const tt = later.tt, zone = later.leg.def.zone;
+        if (tt && tt.next) return this._t("tt_next", { l, d: this._fmtDay(tt.next, false, zone) });
+        // a service date is a day, not a moment: noon UTC of it, read in UTC
+        if (tt && tt.until) return this._t("tt_until", { l, d: this._fmtDay(new Date(`${tt.until}T12:00:00Z`), true, "UTC") });
         if (tt) return this._t("tt_none", { l });
-        return this._t("no_later", { l, t: fmtHM(later.last || later.at) });
+        return this._t("no_later", { l, t: this._hm(later.last || later.at, zone) });
     }
 
     // a day and a clock as the notes say them, "lun. 22 sept. 05:57", the
     // clock left out for a day alone
-    _fmtDay(d, dayOnly) {
+    _fmtDay(d, dayOnly, zone) {
         let f;
-        try { f = new Intl.DateTimeFormat(this._lang(), { weekday: "short", day: "numeric", month: "short" }); } catch (e) { f = null; }
+        const timeZone = zone || CLOCK.zone;
+        try { f = new Intl.DateTimeFormat(this._lang(), { weekday: "short", day: "numeric", month: "short", ...(timeZone ? { timeZone } : {}) }); } catch (e) { f = null; }
         const day = f ? f.format(d) : d.toDateString();
-        return dayOnly ? day : `${day} ${fmtHM(d)}`;
+        return dayOnly ? day : `${day} ${this._hm(d, zone)}`;
     }
 
     // When a ride reaches a point. At the sensor's own origin, the sensor's
@@ -4076,7 +4160,7 @@ class Gtfs2LiveCard extends HTMLElement {
         // the collapsed head of the journeys: the next run of them all,
         // arrival and delay included
         const nextSummary = (first) => (first
-            ? `${this._t("next")} <b>${dayTag(lang, first.dep, now) ? esc(dayTag(lang, first.dep, now)) + " " : ""}${fmtHM(first.dep)}</b>${first.arr ? ` → ${fmtHM(first.arr)}` : ""}${first.rt && first.delay ? ` · ${first.delay > 0 ? "+" : ""}${first.delay} min` : ""}`
+            ? `${this._t("next")} <b>${dayTag(lang, first.dep, now, this._jZone(first)) ? esc(dayTag(lang, first.dep, now, this._jZone(first))) + " " : ""}${this._hm(first.dep, this._jZone(first))}</b>${first.arr ? ` → ${this._hm(first.arr, this._jZone(first))}` : ""}${first.rt && first.delay ? ` · ${first.delay > 0 ? "+" : ""}${first.delay} min` : ""}`
             : this._t("no_departure"));
         // the journey board: its sections stacked, each with its journeys'
         // next runs; a picked line keeps the journeys of that line alone
@@ -4195,9 +4279,9 @@ class Gtfs2LiveCard extends HTMLElement {
 
         if (this._collapsed.dep) {
             const nextLine = lined && nextRow?.def ? ` <span class="mini-badge" style="background:${esc(this._rowColor(nextRow))};color:${inkOn(this._rowColor(nextRow))}">${esc(this._rowLabel(nextRow))}</span>` : "";
-            const nextDay = nextRow ? dayTag(lang, nextRow.time, now) : "";
+            const nextDay = nextRow ? dayTag(lang, nextRow.time, now, nextRow.def?.zone) : "";
             const summary = nextRow
-                ? `${this._t("next")}${nextLine} <b>${nextDay ? esc(nextDay) + " " : ""}${fmtHM(nextRow.time)}</b>${nextRow.rt && nextRow.delayMin ? ` · ${nextRow.delayMin > 0 ? "+" : ""}${nextRow.delayMin} min` : ""}`
+                ? `${this._t("next")}${nextLine} <b>${nextDay ? esc(nextDay) + " " : ""}${this._hm(nextRow.time, nextRow.def?.zone)}</b>${nextRow.rt && nextRow.delayMin ? ` · ${nextRow.delayMin > 0 ? "+" : ""}${nextRow.delayMin} min` : ""}`
                 : this._t("no_departure");
             head.innerHTML = `
                 <span class="chev">${ICONS.chevronRight}</span>
@@ -4229,14 +4313,14 @@ class Gtfs2LiveCard extends HTMLElement {
             // sentence - the realtime icon and the right-hand chip already
             // carry it - so a row with nothing exceptional is a single line.
             const bits = [];
-            if (strike) bits.push(`<span class="sub strike">${this._t("scheduled_at", { t: fmtHM(r.theo) })}</span>`);
+            if (strike) bits.push(`<span class="sub strike">${this._t("scheduled_at", { t: this._hm(r.theo, r.def?.zone) })}</span>`);
             // a run ending short of the destination says where, with its
             // arrival there, durations on or not; one leaving past the
             // origin names the place beside its time
             const e = this._rowEnds(r);
             if (r.durMin != null && !r.struck && (this._config.show_duration || e.off)) {
                 const end = e.off ? ` <span class="end-at">${esc(e.off)}</span>` : "";
-                bits.push(`<span class="sub dur">→ ${fmtHM(new Date(r.time.getTime() + r.durMin * 60000))}${end}${this._config.show_duration ? ` · ${fmtDur(r.durMin)}` : ""}</span>`);
+                bits.push(`<span class="sub dur">→ ${this._hm(new Date(r.time.getTime() + r.durMin * 60000), r.def?.zone)}${end}${this._config.show_duration ? ` · ${fmtDur(r.durMin)}` : ""}</span>`);
             }
             const note = this._rowEndsNote(e);
             if (note) bits.push(`<span class="sub jbroken">${note}</span>`);
@@ -4250,7 +4334,7 @@ class Gtfs2LiveCard extends HTMLElement {
             const destSub = multi && r.def
                 ? this._hass?.states?.[r.def.entity]?.attributes?.destination_station_stop_name || ""
                 : "";
-            const tag = dayTag(lang, r.time, now);
+            const tag = dayTag(lang, r.time, now, r.def?.zone);
             // a struck run: its time struck through, no countdown to a bus
             // that does not come, the chip saying which of the two it is
             return `
@@ -4258,7 +4342,7 @@ class Gtfs2LiveCard extends HTMLElement {
                 ${badge}
                 <div class="times">
                     <div class="time-line">
-                        <span class="time${r.struck ? " struck" : ""}">${fmtHM(r.time)}</span>
+                        <span class="time${r.struck ? " struck" : ""}">${this._hm(r.time, r.def?.zone)}</span>
                         ${e.on ? `<span class="sub end-at">${esc(e.on)}</span>` : ""}
                         ${this._rowModeHtml(r)}
                         ${tag ? `<span class="day-tag">${esc(tag)}</span>` : ""}
@@ -4360,7 +4444,7 @@ class Gtfs2LiveCard extends HTMLElement {
     // departure; where the card holds several journeys (labelled), each row
     // says which under its head: a lone line's badge, the journey's title.
     _journeyRowsHtml(runs, lang, now, open, labelled) {
-        const clockOf = (when) => this._clockHtml(when);
+        const clockOf = (when, ride) => this._clockHtml(when, ride?.leg?.def?.zone);
         // a leg's badge, the run's own line when its sensor mixes several
         const badgeOf = (leg, row) => `<span class="mini-badge" style="background:${esc(this._rowColor(row, leg.def))};color:${inkOn(this._rowColor(row, leg.def))}">${esc(this._rowLabel(row, leg.def))}</span>`;
         const openable = (plan) => plan.legs.length > 1 || plan.points.length > 2;
@@ -4385,22 +4469,22 @@ class Gtfs2LiveCard extends HTMLElement {
             const strike = plan.legs[0].si === this._rowStart(plan.legs[0], r0) && r0.rt && r0.theo && Math.abs(r0.time - r0.theo) >= 60000;
             const chip = !j.rt && !mixedRt ? "" : this._statusChip(j.rt, j.delay, j.struck);
             // a day said once, over the first run it applies to
-            const tag = dayTag(lang, j.dep, now);
+            const tag = dayTag(lang, j.dep, now, this._jZone(j));
             const sep = tag && tag !== lastTag ? `<div class="jday"><span class="day-tag">${esc(tag)}</span></div>` : "";
             lastTag = tag;
             const total = j.arr ? clockMins(j.dep, j.arr) : null;
             // the arrival names its day when it is not the departure's
-            const atag = j.arr ? dayTag(lang, j.arr, j.dep) : "";
+            const atag = j.arr ? dayTag(lang, j.arr, j.dep, this._jZone(j)) : "";
             let body = "";
             if (isOpen) {
                 for (const leg of plan.legs) {
                     const ride = j.rides[leg.idx];
                     const pts = [];
                     if (leg.board) {
-                        pts.push({ n: esc(String(leg.board.n)), name: leg.board.name, clock: clockOf({ t: ride.dep, rt: ride.depRt }) });
+                        pts.push({ n: esc(String(leg.board.n)), name: leg.board.name, clock: clockOf({ t: ride.dep, rt: ride.depRt }, ride) });
                     }
                     for (const p of plan.points) {
-                        if (p.leg === leg) pts.push({ n: esc(this._ptLabel(p)), name: p.name || "", clock: clockOf(this._rideTime(p, ride)) });
+                        if (p.leg === leg) pts.push({ n: esc(this._ptLabel(p)), name: p.name || "", clock: clockOf(this._rideTime(p, ride), ride) });
                     }
                     const li = leg.def.idx;
                     const color = esc(leg.def.color);
@@ -4426,8 +4510,8 @@ class Gtfs2LiveCard extends HTMLElement {
                         const say = esc(change(ride.leg, ride));
                         segs.push(`<span class="jchg" role="img" title="${say}" aria-label="${say}"><span>→</span>${ICONS.walk}<span>${ride.wait} min</span><span>→</span></span>`);
                     }
-                    const end = ride.arr ? ` → ${clockOf(this._rideTime(ride.leg.end, ride))}` : "";
-                    segs.push(`<span class="jseg">${badgeOf(ride.leg, ride.row)}${clockOf({ t: ride.dep, rt: ride.depRt })}${end}</span>`);
+                    const end = ride.arr ? ` → ${clockOf(this._rideTime(ride.leg.end, ride), ride)}` : "";
+                    segs.push(`<span class="jseg">${badgeOf(ride.leg, ride.row)}${clockOf({ t: ride.dep, rt: ride.depRt }, ride)}${end}</span>`);
                 }
                 body = `<div class="jsum">${segs.join("")}</div>`;
             }
@@ -4442,12 +4526,12 @@ class Gtfs2LiveCard extends HTMLElement {
             return sep + `
             <div class="row jrow${isOpen ? " open" : ""}${canOpen ? "" : " flat"}${j.struck ? " struck" : ""}"${act}>
                 <div class="jhead"${canOpen ? ` role="button" tabindex="0" aria-expanded="${isOpen}"${act}` : ""}>
-                    ${runLine}<span class="time${j.struck ? " struck" : ""}">${fmtHM(j.dep)}</span>
+                    ${runLine}<span class="time${j.struck ? " struck" : ""}">${this._hm(j.dep, this._jZone(j))}</span>
                     ${j.depRt ? `<span class="rt-icon">${ICONS.live}</span>` : ""}
                     ${this._rowAlertHtml(r0)}
-                    ${j.arr ? `<span class="jarrow">→</span><span class="time">${fmtHM(j.arr)}</span>${atag ? `<span class="day-tag">${esc(atag)}</span>` : ""}` : ""}
+                    ${j.arr ? `<span class="jarrow">→</span><span class="time">${this._hm(j.arr, this._jZone(j))}</span>${atag ? `<span class="day-tag">${esc(atag)}</span>` : ""}` : ""}
                     ${total != null ? `<span class="jtotal">${fmtDur(total)}</span>` : ""}
-                    ${strike ? `<span class="sub strike">${this._t("scheduled_at", { t: fmtHM(r0.theo) })}</span>` : ""}
+                    ${strike ? `<span class="sub strike">${this._t("scheduled_at", { t: this._hm(r0.theo, this._jZone(j)) })}</span>` : ""}
                     <span class="jright"><span class="jwhen">${j.struck ? "" : `<span class="countdown" data-ts="${j.dep.getTime()}">${fmtCountdown(lang, j.dep, now)}</span>`}${chip}</span>${canOpen ? `<span class="chev">${isOpen ? ICONS.chevronDown : ICONS.chevronRight}</span>` : anyOpen ? `<span class="chev ph" aria-hidden="true">${ICONS.chevronRight}</span>` : ""}</span>
                 </div>
                 ${where}
@@ -4499,7 +4583,7 @@ class Gtfs2LiveCard extends HTMLElement {
         const named = rows.some((r) => ends.get(r).on || ends.get(r).off);
         let lastTag = "";
         const cells = rows.map((r) => {
-            const tag = dayTag(lang, r.time, now);
+            const tag = dayTag(lang, r.time, now, r.def?.zone);
             const sep = tag && tag !== lastTag ? `<tr class="day-sep"><td colspan="${ncol}"><span class="day-tag">${esc(tag)}</span></td></tr>` : "";
             lastTag = tag;
             // the realtime icon sits LEFT of the time: the right edge belongs
@@ -4515,19 +4599,19 @@ class Gtfs2LiveCard extends HTMLElement {
             // same reason, and so does the operator's alert on the run
             const e = ends.get(r);
             const dep = (r.rt ? `<span class="rt-icon">${ICONS.live}</span>` : "") + this._rowModeHtml(r) + this._rowAlertHtml(r)
-                + (r.struck ? `<span class="struck">${fmtHM(r.time)}</span>` : fmtHM(r.time))
+                + (r.struck ? `<span class="struck">${this._hm(r.time, r.def?.zone)}</span>` : this._hm(r.time, r.def?.zone))
                 + (e.on ? ` <span class="end-at">${esc(e.on)}</span>` : "");
             const depTitle = r.struck ? this._t(r.struck === "cancelled" ? "cancelled" : "not_stopping")
                 : r.rt && r.theo && Math.abs(r.time - r.theo) >= 60000
-                ? this._t("scheduled_at", { t: fmtHM(r.theo) })
+                ? this._t("scheduled_at", { t: this._hm(r.theo, r.def?.zone) })
                 : this._t(r.rt ? "realtime" : "no_rt_yet");
             let arr = "—", dur = "—";
             if (r.durMin != null && !r.struck) {
                 const at = new Date(r.time.getTime() + r.durMin * 60000);
                 // the arrival names its day only when it differs from the
                 // DEPARTURE's: a night run does not repeat its own date
-                const atag = dayTag(lang, at, r.time);
-                arr = `${atag ? `<span class="day-tag">${esc(atag)}</span> ` : ""}${fmtHM(at)}${e.off ? ` <span class="end-at">${esc(e.off)}</span>` : ""}`;
+                const atag = dayTag(lang, at, r.time, r.def?.zone);
+                arr = `${atag ? `<span class="day-tag">${esc(atag)}</span> ` : ""}${this._hm(at, r.def?.zone)}${e.off ? ` <span class="end-at">${esc(e.off)}</span>` : ""}`;
                 const b = best.get(keyOf(r)) ?? r.durMin;
                 // only the fast runs are marked, green within a couple of
                 // minutes or 15% of the best time to the same place: a slower
@@ -4562,7 +4646,7 @@ class Gtfs2LiveCard extends HTMLElement {
         }).join("");
         const summary = nextRow ? `<div class="board-next">${this._t("next_dep_in", {
             c: `<span class="countdown" data-ts="${nextRow.time.getTime()}">${fmtCountdown(lang, nextRow.time, now)}</span>`,
-            t: `<b>${fmtHM(nextRow.time)}</b>`,
+            t: `<b>${this._hm(nextRow.time, nextRow.def?.zone)}</b>`,
         })}</div>` : "";
         return summary
             + `<div class="board-wrap"><table class="board"><thead><tr>`
@@ -4613,13 +4697,13 @@ class Gtfs2LiveCard extends HTMLElement {
             + `<th class="fit"></th><th class="num fit">${this._t("col_duration")}</th><th></th>`;
         let lastTag = "";
         const body = journeys.map((j) => {
-            const tag = dayTag(lang, j.dep, now);
+            const tag = dayTag(lang, j.dep, now, this._jZone(j));
             const sep = tag && tag !== lastTag ? `<tr class="day-sep"><td colspan="${ncol}"><span class="day-tag">${esc(tag)}</span></td></tr>` : "";
             lastTag = tag;
             const tds = cols.map((c, i) => {
                 // a struck run has its departure and nothing after it
                 if (j.struck) {
-                    return i === 0 ? `<td class="dep fit stick"><span class="rt-icon">${ICONS.live}</span><span class="struck">${fmtHM(j.dep)}</span></td>` : `<td class="fit"></td>`;
+                    return i === 0 ? `<td class="dep fit stick"><span class="rt-icon">${ICONS.live}</span><span class="struck">${this._hm(j.dep, this._jZone(j))}</span></td>` : `<td class="fit"></td>`;
                 }
                 if (c.kind === "wait") {
                     const w = plan.legs[c.k].walk, ride = j.rides[c.k];
@@ -4628,8 +4712,8 @@ class Gtfs2LiveCard extends HTMLElement {
                     return `<td class="num fit jw" title="${esc(tip)}">${ride.wait} min</td>`;
                 }
                 const ride = j.rides[c.leg.idx];
-                if (i === 0) return `<td class="dep fit stick">${j.depRt ? `<span class="rt-icon">${ICONS.live}</span>` : ""}${fmtHM(j.dep)}</td>`;
-                return `<td class="fit">${this._clockHtml(c.kind === "board" ? { t: ride.dep, rt: ride.depRt } : this._rideTime(c.p, ride))}</td>`;
+                if (i === 0) return `<td class="dep fit stick">${j.depRt ? `<span class="rt-icon">${ICONS.live}</span>` : ""}${this._hm(j.dep, this._jZone(j))}</td>`;
+                return `<td class="fit">${this._clockHtml(c.kind === "board" ? { t: ride.dep, rt: ride.depRt } : this._rideTime(c.p, ride), this._jZone(j))}</td>`;
             }).join("");
             // the delay at the arrival, beside it in a column of its own
             const dly = j.struck ? this._statusChip(true, null, j.struck)
@@ -4641,7 +4725,7 @@ class Gtfs2LiveCard extends HTMLElement {
         const first = journeys[0];
         const summary = `<div class="board-next">${this._t("next_dep_in", {
             c: `<span class="countdown" data-ts="${first.dep.getTime()}">${fmtCountdown(lang, first.dep, now)}</span>`,
-            t: `<b>${fmtHM(first.dep)}</b>`,
+            t: `<b>${this._hm(first.dep, this._jZone(first))}</b>`,
         })}</div>`;
         return summary + `<div class="board-wrap"><table class="board jboard"><thead>${head1 ? `<tr class="legs">${head1}</tr>` : ""}<tr>${head2}</tr></thead>`
             + `<tbody>${body}</tbody></table></div>`;
@@ -4659,14 +4743,14 @@ class Gtfs2LiveCard extends HTMLElement {
     // plain, each saying which in its tooltip; a run that skips the place
     // said so, in bold when it is the feed's word for today, and a run that
     // calls with its door shut where the rider gets on, or off, said so too
-    _clockHtml(when) {
+    _clockHtml(when, zone) {
         if (when?.unserved) {
             return when.skipped ? `<b class="jbroken" title="${esc(this._t("realtime"))}">${this._t("not_stopping")}</b>`
                 : `<span class="jbroken">${this._t(when.noBoard ? "no_boarding" : when.noAlight ? "no_alighting" : "not_served")}</span>`;
         }
         if (!when?.t) return "";
-        return when.rt ? `<b title="${esc(this._t("realtime"))}">${fmtHM(when.t)}</b>`
-            : `<span title="${esc(this._t("scheduled"))}">${fmtHM(when.t)}</span>`;
+        return when.rt ? `<b title="${esc(this._t("realtime"))}">${this._hm(when.t, zone)}</b>`
+            : `<span title="${esc(this._t("scheduled"))}">${this._hm(when.t, zone)}</span>`;
     }
 
     /* ── PANE 2: MAP data ───────────────────────────────────────────────── */
