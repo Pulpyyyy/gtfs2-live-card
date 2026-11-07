@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.5.1
+
+Nothing changes in the card. This release follows the full HACS validation, and the README opens the card in HACS with the My Home Assistant button.
+
 ## 2.5.0
 
 ### Added
