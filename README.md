@@ -67,8 +67,8 @@ Some features read attributes that gtfs2 does not publish yet. They are written 
 
 [![Open your Home Assistant instance and open this repository inside HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Pulpyyyy&repository=gtfs2-live-card&category=plugin)
 
-1. Open the repository in HACS with the button above, or add it by hand: HACS, three-dot menu, **Custom repositories**, `https://github.com/Pulpyyyy/gtfs2-live-card`, category **Dashboard**.
-2. Install **GTFS2 Live Card**, and reload when prompted.
+1. In HACS, search for **GTFS2 Live Card**, or open it with the button above.
+2. Install it, and reload when prompted.
 
 ### Manual
 
