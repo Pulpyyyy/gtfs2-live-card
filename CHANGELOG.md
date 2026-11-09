@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.2
+
+### Changed
+
+- The map library, MapLibre, ships with the card, unchanged from its npm release and with its license, in `dist/maplibre-gl-<version>/`. It is no longer loaded from jsDelivr when the map opens, so the map no longer depends on a CDN. A manual install copies that folder too.
+
 ## 2.5.1
 
 Nothing changes in the card. This release follows the full HACS validation, and the README opens the card in HACS with the My Home Assistant button.
