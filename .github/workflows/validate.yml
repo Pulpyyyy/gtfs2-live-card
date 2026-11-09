@@ -17,7 +17,7 @@ jobs:
           category: plugin
 
   build:
-    name: lang parity
+    name: lang parity and MapLibre
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,5 +25,7 @@ jobs:
         with:
           python-version: "3.11"
       # dist/ is the source, served as is by HACS; what can drift is the five
-      # language files, so fail when one misses or adds a key vs English.
+      # language files, so fail when one misses or adds a key vs English, and
+      # the MapLibre copy, so fail when it is not byte for byte the npm
+      # package of the card's MAPLIBRE_VERSION.
       - run: python build.py --check

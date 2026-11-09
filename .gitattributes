@@ -1,0 +1,2 @@
+# MapLibre is kept byte for byte as npm ships it (build.py --check)
+dist/maplibre-gl-*/** -text

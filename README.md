@@ -72,7 +72,7 @@ Some features read attributes that gtfs2 does not publish yet. They are written 
 
 ### Manual
 
-1. Copy `dist/gtfs2-live-card.js` **and the `dist/lang/` folder** into `config/www/`. The card loads its languages from `lang/`, next to itself.
+1. Copy `dist/gtfs2-live-card.js`, **the `dist/lang/` folder and the `dist/maplibre-gl-<version>/` folder** into `config/www/`. The card loads its languages and the map library from these folders, next to itself. On an update, remove the `maplibre-gl-<version>` folder of the previous release.
 2. Settings, Dashboards, **Resources**: add `/local/gtfs2-live-card.js` as a *JavaScript module*.
 
 ## Getting started
@@ -273,7 +273,7 @@ A vector base map ([MapLibre](https://maplibre.org/), [VersaTiles](https://versa
 
 *Following tram 58 on line A: the route behind it turns dashed, and the popup names its terminus and its next stop.*
 
-The browser loads the MapLibre library, the style, the tiles and the fonts itself (from jsDelivr and VersaTiles), so it needs the internet. Without WebGL or without the library, the routes and vehicles still draw on a plain background, and the map's footer says why. `map_style` sets another base map: a MapLibre style URL, or a raster `{z}/{x}/{y}` tile URL.
+The [MapLibre](https://maplibre.org/) library ships with the card, unchanged from its npm release, with its license, in `dist/maplibre-gl-<version>/`. The browser loads the style, the tiles and the fonts itself from VersaTiles, so it needs the internet. Without WebGL or without the library, the routes and vehicles still draw on a plain background, and the map's footer says why. `map_style` sets another base map: a MapLibre style URL, or a raster `{z}/{x}/{y}` tile URL.
 
 If the drawing and the base map ever part ways, the card can say what it does with the view: `localStorage.setItem("gtfs2-live-card:debug", "1")` in the browser console, then reload. Every move (wheel, double-click, buttons, drag, pinch, glides, actions) logs a `gtfs2-live-card map:` line with the centre, the width in km, where the base map is, and `offsetPx`, the pixels between the two; past one pixel, that line belongs in a bug report. `localStorage.removeItem("gtfs2-live-card:debug")` turns it off.
 
