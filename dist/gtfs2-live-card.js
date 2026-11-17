@@ -4744,7 +4744,8 @@ class Gtfs2LiveCard extends HTMLElement {
         const lined = multi || rows.some((r) => r.line);
         // a via column only when a line of the board has stops on the way
         const showVia = rows.some((r) => (vias.get(r.def?.idx) || []).length);
-        const ncol = 5 + (lined ? 1 : 0) + (showVia ? 1 : 0);
+        // with show_stops the stops ride their own row: no last column of words
+        const ncol = (stops ? 4 : 5) + (lined ? 1 : 0) + (showVia ? 1 : 0);
         // a run leaving past the origin, or ending short of the destination,
         // names the place beside its time: the times then start the cells,
         // read from the left, whatever follows them
@@ -4815,20 +4816,21 @@ class Gtfs2LiveCard extends HTMLElement {
             const stopRow = stops && (from || to)
                 ? `<tr class="row-stops">${lined ? "<td></td>" : ""}<td colspan="2" class="stop-o">${esc(from)}</td>`
                   + (showVia ? `<td class="vias"></td>` : "")
-                  + `<td colspan="3" class="stop-d">${to ? `→ ${esc(to)}` : ""}</td></tr>` : "";
+                  + `<td colspan="2" class="stop-d">${to ? `→ ${esc(to)}` : ""}</td></tr>` : "";
             return sep + `<tr${stopRow ? ` class="has-stops"` : ""}>${line}<td class="${num} dep fit" title="${esc(depTitle)}">${dep}</td><td class="dly-c fit">${dly}</td>${via}<td class="${num} fit">${arr}</td>`
-                + `<td class="num fit">${dur}</td>${last}</tr>` + stopRow + sub;
+                + `<td class="num fit">${dur}</td>${stops ? "" : last}</tr>` + stopRow + sub;
         }).join("");
         const summary = nextRow ? `<div class="board-next">${this._t("next_dep_in", {
             c: `<span class="countdown" data-ts="${nextRow.time.getTime()}">${fmtCountdown(lang, nextRow.time, now)}</span>`,
             t: `<b>${this._hm(nextRow.time, nextRow.def?.zone)}</b>`,
         })}</div>` : "";
         return summary
-            + `<div class="board-wrap"><table class="board"><thead><tr>`
+            + `<div class="board-wrap"><table class="board${stops ? " stops" : ""}"><thead><tr>`
             + (lined ? `<th class="fit">${this._t("col_line")}</th>` : "")
             + `<th class="${named ? "num at" : "num"} fit">${this._t("col_departure")}</th><th class="fit"></th>`
             + (showVia ? `<th class="fit vias">${this._t("col_via")}</th>` : "") + `<th class="${named ? "num at" : "num"} fit">${this._t("col_arrival")}</th>`
-            + `<th class="num fit">${this._t("col_duration")}</th><th${showDest ? ` class="dest-c"` : ""}>${showDest ? this._t("col_destination") : ""}</th>`
+            + `<th class="num fit">${this._t("col_duration")}</th>`
+            + (stops ? "" : `<th${showDest ? ` class="dest-c"` : ""}>${showDest ? this._t("col_destination") : ""}</th>`)
             + `</tr></thead><tbody>${cells}</tbody></table></div>`;
     }
 
@@ -7435,7 +7437,13 @@ class Gtfs2LiveCard extends HTMLElement {
         .board tr.row-sub { display: none; }
         .board tr.has-stops td { border-bottom: none; padding-bottom: 0; }
         .board tr.row-stops td { border-top: none; padding-top: 0; font-size: 12px; color: var(--secondary-text-color); white-space: normal; text-align: left; }
-        .board tr.row-stops td.stop-o { padding-left: 8px; }
+        /* show_stops: the columns share the width instead of the last one taking it all,
+           and each time sits left, over the stop named under it; the duration stays right */
+        .board.stops .fit { width: auto; }
+        .board.stops td:first-child, .board.stops th:first-child { width: 1%; }
+        .board.stops td.dly-c { width: 1%; }
+        .board.stops th.num, .board.stops td.num { text-align: left; }
+        .board.stops th:last-child, .board.stops td.num:last-child { text-align: right; }
         .board tr.row-sub td { border-top: none; padding-top: 0; white-space: normal; font-size: 12px; color: var(--secondary-text-color); }
         .board tr.row-sub .sub-dest, .board tr.row-sub .sub-via { display: block; }
         .board tr.row-sub .via-t { display: inline; white-space: nowrap; }
