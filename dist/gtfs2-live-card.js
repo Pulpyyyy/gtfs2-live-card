@@ -7091,7 +7091,11 @@ class Gtfs2LiveCard extends HTMLElement {
     _styles() {
         return `
         :host { display: block; }
-        ha-card { overflow: hidden; position: relative; font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif); }
+        /* isolate: the badges' marks stack up to z-index 6, and without a
+           stacking context of the card's own they competed with the
+           dashboard's, drawn over Home Assistant's top bar (z-index 4) as
+           the view scrolled under it */
+        ha-card { overflow: hidden; position: relative; isolation: isolate; font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif); }
         /* The badges and the text zone sit side by side until the text zone
            would be squeezed under TITLES_MIN; then it takes a row of its own.
            Without the wrap a crowded header shrank the zone to nothing and the
