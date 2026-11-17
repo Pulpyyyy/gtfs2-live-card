@@ -153,6 +153,7 @@ export default {
         show_departures: "Show the departures and journeys pane",
         show_map: "Show the map pane",
         show_duration: "Show the journey duration",
+        show_stops: "Show the departure and arrival stops",
         l_entity: "GTFS2 sensor (entity)",
         l_line: "Badge label (empty = derived)",
         l_positions_url: "Positions file (empty = derived)",

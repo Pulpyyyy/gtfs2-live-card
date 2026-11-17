@@ -152,6 +152,7 @@ export default {
         show_departures: "Afficher la section Départs et trajets",
         show_map: "Afficher la section Carte",
         show_duration: "Afficher la durée du trajet",
+        show_stops: "Afficher les arrêts de départ et d’arrivée",
         l_entity: "Capteur GTFS2 (entity)",
         l_line: "Badge (vide = déduit)",
         l_positions_url: "Fichier positions (vide = déduit)",

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `show_stops` (also in the card editor): each departure row names the stop it is boarded at under the departure time, and the stop it is left at under the arrival time, on every card width. The destination column is then left out.
+
+### Fixed
+
+- The badge pips (realtime, alerts) no longer draw over Home Assistant's top bar when the dashboard scrolls: the card keeps its own stacking order (`isolation: isolate`).
+
 ## 2.5.2
 
 ### Changed

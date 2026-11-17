@@ -305,6 +305,7 @@ A destination chip in the *Journeys* view is also the status display of the line
 | `places` | none | Stops the header treats as one place: `{shown name: [stop names]}`. |
 | `show_departures` | `true` | The departures pane. `false` makes a map-only card. |
 | `show_duration` | `false` | Arrival time and journey duration on each row of the list. The table always shows them. |
+| `show_stops` | `false` | The departure stop under the departure time and the arrival stop under the arrival time, on every width; the destination column is left out. |
 | `show_map` | `true` | The map pane. `false` makes a departures-only card. |
 | `mode_icons` | `true` | The mode glyph on line badges and on the band of the chips' plates. `false` leaves the line's number alone. |
 | `refresh` | `60` | How often the map reads the vehicle positions, in seconds (at least 15). |

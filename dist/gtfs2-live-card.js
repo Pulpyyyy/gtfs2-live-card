@@ -39,6 +39,7 @@ const DEFAULTS = {
     lines: null,              // list of entity_ids and/or {entity?, positions_url?, route_url?, line?, color?}
     mode_icons: true,         // mode chip (mdi) on the line badges
     show_duration: false,     // theoretical journey time on each departure row
+    show_stops: false,        // origin stop under the departure, destination under the arrival
     // A pane can be COLLAPSED, which the card remembers per user, or hidden
     // outright, which is the dashboard's decision and sticks for everyone:
     // a departures-only card in a column, a map-only card next to it.
@@ -4737,7 +4738,9 @@ class Gtfs2LiveCard extends HTMLElement {
         }
         // a destination column only when it tells rows apart
         const destOf = (r) => String((r.def?.entity && this._hass?.states?.[r.def.entity]?.attributes?.destination_station_stop_name) || "");
-        const showDest = multi && new Set(rows.map(destOf).filter(Boolean)).size > 1;
+        const stops = this._config.show_stops === true;
+        const originOf = (r) => String((r.def?.entity && this._hass?.states?.[r.def.entity]?.attributes?.origin_station_stop_name) || "");
+        const showDest = !stops && multi && new Set(rows.map(destOf).filter(Boolean)).size > 1;
         const lined = multi || rows.some((r) => r.line);
         // a via column only when a line of the board has stops on the way
         const showVia = rows.some((r) => (vias.get(r.def?.idx) || []).length);
@@ -4765,7 +4768,7 @@ class Gtfs2LiveCard extends HTMLElement {
             const e = ends.get(r);
             const dep = (r.rt ? `<span class="rt-icon">${ICONS.live}</span>` : "") + this._rowModeHtml(r) + this._rowAlertHtml(r)
                 + (r.struck ? `<span class="struck">${this._hm(r.time, r.def?.zone)}</span>` : this._hm(r.time, r.def?.zone))
-                + (e.on ? ` <span class="end-at">${esc(e.on)}</span>` : "");
+                + (e.on && !stops ? ` <span class="end-at">${esc(e.on)}</span>` : "");
             const depTitle = r.struck ? this._t(r.struck === "cancelled" ? "cancelled" : "not_stopping")
                 : r.rt && r.theo && Math.abs(r.time - r.theo) >= 60000
                 ? this._t("scheduled_at", { t: this._hm(r.theo, r.def?.zone) })
@@ -4776,7 +4779,7 @@ class Gtfs2LiveCard extends HTMLElement {
                 // the arrival names its day only when it differs from the
                 // DEPARTURE's: a night run does not repeat its own date
                 const atag = dayTag(lang, at, r.time, r.def?.zone);
-                arr = `${atag ? `<span class="day-tag">${esc(atag)}</span> ` : ""}${this._hm(at, r.def?.zone)}${e.off ? ` <span class="end-at">${esc(e.off)}</span>` : ""}`;
+                arr = `${atag ? `<span class="day-tag">${esc(atag)}</span> ` : ""}${this._hm(at, r.def?.zone)}${e.off && !stops ? ` <span class="end-at">${esc(e.off)}</span>` : ""}`;
                 const b = best.get(keyOf(r)) ?? r.durMin;
                 // only the fast runs are marked, green within a couple of
                 // minutes or 15% of the best time to the same place: a slower
@@ -4801,13 +4804,20 @@ class Gtfs2LiveCard extends HTMLElement {
             // phone seven columns left the stops on the way two letters of
             // width ("Ras / pail / 06:0 / 3"). There the two columns of words
             // go and this row says them whole; wide, it is never shown
-            const words = [note ? `<span class="sub-dest jbroken">${note}</span>`
+            const words = [note && !stops ? `<span class="sub-dest jbroken">${note}</span>`
                 : showDest && destOf(r) ? `<span class="sub-dest">→ ${esc(destOf(r))}</span>` : "",
                 rv.length ? `<span class="sub-via">${this._t("col_via")} ${this._viasHtml(rv)}</span>` : ""].filter(Boolean);
             const sub = words.length ? `<tr class="row-sub">${lined ? "<td></td>" : ""}<td colspan="${ncol - (lined ? 1 : 0)}">${words.join("")}</td></tr>` : "";
             const num = named ? "num at" : "num";
-            return sep + `<tr>${line}<td class="${num} dep fit" title="${esc(depTitle)}">${dep}</td><td class="dly-c fit">${dly}</td>${via}<td class="${num} fit">${arr}</td>`
-                + `<td class="num fit">${dur}</td>${last}</tr>` + sub;
+            // the stop the run is boarded at under the departure, the
+            // stop it is left at under the arrival, on every width
+            const from = e.on || originOf(r), to = e.off || destOf(r);
+            const stopRow = stops && (from || to)
+                ? `<tr class="row-stops">${lined ? "<td></td>" : ""}<td colspan="2" class="stop-o">${esc(from)}</td>`
+                  + (showVia ? `<td class="vias"></td>` : "")
+                  + `<td colspan="3" class="stop-d">${to ? `→ ${esc(to)}` : ""}</td></tr>` : "";
+            return sep + `<tr${stopRow ? ` class="has-stops"` : ""}>${line}<td class="${num} dep fit" title="${esc(depTitle)}">${dep}</td><td class="dly-c fit">${dly}</td>${via}<td class="${num} fit">${arr}</td>`
+                + `<td class="num fit">${dur}</td>${last}</tr>` + stopRow + sub;
         }).join("");
         const summary = nextRow ? `<div class="board-next">${this._t("next_dep_in", {
             c: `<span class="countdown" data-ts="${nextRow.time.getTime()}">${fmtCountdown(lang, nextRow.time, now)}</span>`,
@@ -7091,7 +7101,7 @@ class Gtfs2LiveCard extends HTMLElement {
     _styles() {
         return `
         :host { display: block; }
-        ha-card { overflow: hidden; position: relative; font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif); }
+        ha-card { overflow: hidden; position: relative; isolation: isolate; font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif); }
         /* The badges and the text zone sit side by side until the text zone
            would be squeezed under TITLES_MIN; then it takes a row of its own.
            Without the wrap a crowded header shrank the zone to nothing and the
@@ -7423,6 +7433,9 @@ class Gtfs2LiveCard extends HTMLElement {
         /* a day said once, on a row of its own */
         .board tr.day-sep td { padding: 8px 12px 2px; border-top: none; }
         .board tr.row-sub { display: none; }
+        .board tr.has-stops td { border-bottom: none; padding-bottom: 0; }
+        .board tr.row-stops td { border-top: none; padding-top: 0; font-size: 12px; color: var(--secondary-text-color); white-space: normal; text-align: left; }
+        .board tr.row-stops td.stop-o { padding-left: 8px; }
         .board tr.row-sub td { border-top: none; padding-top: 0; white-space: normal; font-size: 12px; color: var(--secondary-text-color); }
         .board tr.row-sub .sub-dest, .board tr.row-sub .sub-via { display: block; }
         .board tr.row-sub .via-t { display: inline; white-space: nowrap; }
@@ -7638,6 +7651,7 @@ class Gtfs2LiveCardEditor extends HTMLElement {
             ...(c.show_departures === false ? [] : [
                 { name: "max_departures", selector: { number: { min: 1, max: 20, mode: "box" } } },
                 { name: "show_duration", selector: { boolean: {} } },
+                { name: "show_stops", selector: { boolean: {} } },
                 { name: "max_transfer_wait", selector: { number: { min: 5, mode: "box", unit_of_measurement: "min" } } },
                 ...(this._trips?.length ? [{ name: "max_changes", selector: { number: { min: 0, max: 8, mode: "box" } } }] : []),
             ]),
@@ -7667,6 +7681,7 @@ class Gtfs2LiveCardEditor extends HTMLElement {
             show_departures: c.show_departures !== false,
             max_departures: c.max_departures ?? DEFAULTS.max_departures,
             show_duration: c.show_duration === true,
+            show_stops: c.show_stops === true,
             max_transfer_wait: c.max_transfer_wait ?? DEFAULTS.max_transfer_wait,
             ...(this._trips?.length ? { max_changes: c.max_changes ?? DEFAULTS.max_changes } : {}),
         };
@@ -8517,6 +8532,9 @@ class Gtfs2LiveCardEditor extends HTMLElement {
         // a line of YAML
         if (has("show_duration")) {
             if (v.show_duration === true) c.show_duration = true; else delete c.show_duration;
+        }
+        if (has("show_stops")) {
+            if (v.show_stops === true) c.show_stops = true; else delete c.show_stops;
         }
         this._emit();
         // a pane switched on or off shows or hides its options

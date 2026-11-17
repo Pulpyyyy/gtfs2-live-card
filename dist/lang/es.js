@@ -152,6 +152,7 @@ export default {
         show_departures: "Mostrar la sección Salidas y trayectos",
         show_map: "Mostrar la sección Mapa",
         show_duration: "Mostrar la duración del trayecto",
+        show_stops: "Mostrar las paradas de salida y llegada",
         l_entity: "Sensor GTFS2 (entity)",
         l_line: "Etiqueta del badge (vacío = deducido)",
         l_positions_url: "Archivo de posiciones (vacío = deducido)",

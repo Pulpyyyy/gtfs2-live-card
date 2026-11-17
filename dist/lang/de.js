@@ -152,6 +152,7 @@ export default {
         show_departures: "Bereich Abfahrten und Fahrten anzeigen",
         show_map: "Kartenbereich anzeigen",
         show_duration: "Fahrtdauer anzeigen",
+        show_stops: "Abfahrts- und Ankunftshaltestelle anzeigen",
         l_entity: "GTFS2-Sensor (entity)",
         l_line: "Badge-Text (leer = abgeleitet)",
         l_positions_url: "Positionsdatei (leer = abgeleitet)",
