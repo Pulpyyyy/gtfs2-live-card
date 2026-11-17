@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.3
+
+### Fixed
+
+- The line badges and their marks no longer draw over Home Assistant's top bar when the dashboard scrolls under it: the card keeps its own stacking order. Reported by cruzpazv in #8.
+
 ## 2.5.2
 
 ### Changed
