@@ -43,6 +43,7 @@ export default {
         col_arrival: "Llegada",
         col_via: "Vía",
         col_duration: "Duración",
+        col_from: "Desde",
         col_destination: "Destino",
         col_wait: "Transbordo",
         col_line: "Línea",

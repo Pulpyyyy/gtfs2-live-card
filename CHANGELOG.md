@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- A **From** column on the Lines view's board names the stop each run leaves from, only when the board mixes sensors leaving from different stops, as the destination column does for destinations. On a narrow card the stop joins the line under the run ("L'Indien → De Gaulle"). Suggested by cruzpazv in #8.
+
+### Fixed
+
+- On a wide card whose table runs out of room, the stops on the way now break between stops instead of pushing the destination column out of the card.
+
 ## 2.5.3
 
 ### Fixed

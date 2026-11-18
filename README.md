@@ -204,6 +204,7 @@ Times are read where the line runs, in its agency's time zone (Home Assistant's 
 
 - `show_duration: true` adds the arrival time and the journey duration to each row ("→ 07:07 · 1 h 04").
 - In the Lines view the board is a timetable: line, departure (with its realtime mark and delay), arrival, duration and destination columns, sorted by departure time, under a line giving the next departure. Each duration is coloured in three steps against the fastest run to the same destination. On a wide card the columns spread over its width; on a phone the destination wraps rather than scrolling sideways. The Journeys view is a list.
+- A **From** column names the stop each run leaves from, only when the board mixes sensors leaving from different stops, as the destination column shows only when destinations differ. On a phone the stop joins the line under the run ("L'Indien → De Gaulle").
 - A departure ridden by another mode than its line, a replacement coach on a train line, shows that mode's glyph beside its time.
 
 ![Departures as a timetable](images/board-light.png)

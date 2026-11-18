@@ -4738,10 +4738,17 @@ class Gtfs2LiveCard extends HTMLElement {
         // a destination column only when it tells rows apart
         const destOf = (r) => String((r.def?.entity && this._hass?.states?.[r.def.entity]?.attributes?.destination_station_stop_name) || "");
         const showDest = multi && new Set(rows.map(destOf).filter(Boolean)).size > 1;
+        // a From column on the same terms: only when the board mixes sensors
+        // leaving from different stops. The sensors' own origins decide; a
+        // run leaving past its origin already names its stop beside the time,
+        // and the column names that stop for it
+        const sensorFrom = (r) => String((r.def?.entity && this._hass?.states?.[r.def.entity]?.attributes?.origin_station_stop_name) || "");
+        const originOf = (r) => String(ends.get(r).on || sensorFrom(r));
+        const showFrom = new Set(rows.map(sensorFrom).filter(Boolean)).size > 1;
         const lined = multi || rows.some((r) => r.line);
         // a via column only when a line of the board has stops on the way
         const showVia = rows.some((r) => (vias.get(r.def?.idx) || []).length);
-        const ncol = 5 + (lined ? 1 : 0) + (showVia ? 1 : 0);
+        const ncol = 5 + (lined ? 1 : 0) + (showVia ? 1 : 0) + (showFrom ? 1 : 0);
         // a run leaving past the origin, or ending short of the destination,
         // names the place beside its time: the times then start the cells,
         // read from the left, whatever follows them
@@ -4802,11 +4809,13 @@ class Gtfs2LiveCard extends HTMLElement {
             // width ("Ras / pail / 06:0 / 3"). There the two columns of words
             // go and this row says them whole; wide, it is never shown
             const words = [note ? `<span class="sub-dest jbroken">${note}</span>`
+                : showFrom && originOf(r) ? `<span class="sub-dest">${esc(originOf(r))}${showDest && destOf(r) ? ` → ${esc(destOf(r))}` : ""}</span>`
                 : showDest && destOf(r) ? `<span class="sub-dest">→ ${esc(destOf(r))}</span>` : "",
                 rv.length ? `<span class="sub-via">${this._t("col_via")} ${this._viasHtml(rv)}</span>` : ""].filter(Boolean);
             const sub = words.length ? `<tr class="row-sub">${lined ? "<td></td>" : ""}<td colspan="${ncol - (lined ? 1 : 0)}">${words.join("")}</td></tr>` : "";
             const num = named ? "num at" : "num";
-            return sep + `<tr>${line}<td class="${num} dep fit" title="${esc(depTitle)}">${dep}</td><td class="dly-c fit">${dly}</td>${via}<td class="${num} fit">${arr}</td>`
+            const from = showFrom ? `<td class="from-c fit">${esc(originOf(r)) || "-"}</td>` : "";
+            return sep + `<tr>${line}${from}<td class="${num} dep fit" title="${esc(depTitle)}">${dep}</td><td class="dly-c fit">${dly}</td>${via}<td class="${num} fit">${arr}</td>`
                 + `<td class="num fit">${dur}</td>${last}</tr>` + sub;
         }).join("");
         const summary = nextRow ? `<div class="board-next">${this._t("next_dep_in", {
@@ -4816,6 +4825,7 @@ class Gtfs2LiveCard extends HTMLElement {
         return summary
             + `<div class="board-wrap"><table class="board"><thead><tr>`
             + (lined ? `<th class="fit">${this._t("col_line")}</th>` : "")
+            + (showFrom ? `<th class="from-c fit">${this._t("col_from")}</th>` : "")
             + `<th class="${named ? "num at" : "num"} fit">${this._t("col_departure")}</th><th class="fit"></th>`
             + (showVia ? `<th class="fit vias">${this._t("col_via")}</th>` : "") + `<th class="${named ? "num at" : "num"} fit">${this._t("col_arrival")}</th>`
             + `<th class="num fit">${this._t("col_duration")}</th><th${showDest ? ` class="dest-c"` : ""}>${showDest ? this._t("col_destination") : ""}</th>`
@@ -7377,6 +7387,9 @@ class Gtfs2LiveCard extends HTMLElement {
         .sub.strike { text-decoration: line-through; }
         .sub { font-size: 12px; }
         .via-t { white-space: nowrap; }
+        /* the stops on the way break between stops when the table runs out
+           of room (a From column beside them), so the destination stays in */
+        .board td.vias { white-space: normal; }
         .vias .jbroken { font-size: inherit; }
         .sub-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; min-width: 0; }
         /* the merged line reads as a sentence: capital on its first letter,
@@ -7489,7 +7502,7 @@ class Gtfs2LiveCard extends HTMLElement {
            with the stops on the way beside it. Under 640 px they take the
            row under the times. */
         @container (max-width: 640px) {
-            .board:not(.jboard) .vias, .board:not(.jboard) .dest-c, .board:not(.jboard) .note-c > * { display: none; }
+            .board:not(.jboard) .vias, .board:not(.jboard) .dest-c, .board:not(.jboard) .from-c, .board:not(.jboard) .note-c > * { display: none; }
             .board:not(.jboard) tr.row-sub { display: table-row; }
         }
         .info-strip { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--divider-color); }

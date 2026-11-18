@@ -971,6 +971,23 @@ try {
       linesView(card({ lines: [skips, bus40], trips: [[O, D], [O, C]], title: `Runs passing ${C} without stopping`, max_departures: 6 }, null, null, 500));
       view(card({ lines: [skips], trips: [[O, C]], title: `Trip ${O} → ${C}`, max_departures: 6, show_map: false }, null, null, 500), "trips");
     }
+  } else if (page === "from" || page === "from-narrow") {
+    // La colonne De du tableau : trois capteurs qui partent de trois arrêts
+    // différents (L'Indien, Halmagrand, Gare d'Orléans - Quai E), vue Lignes.
+    // Elle n'apparaît que parce que leurs arrêts de départ diffèrent ; en
+    // étroit, l'arrêt rejoint la ligne sous la course (« L'Indien → De Gaulle »)
+    const W = page === "from" ? 900 : 380;
+    stage.style.gridTemplateColumns = W + "px";
+    const stopOf = (f, name) => network[f].stops.find((s) => s.stop_name === name);
+    const run = (f, o, d) => (stopOf(f, d).stop_sequence - stopOf(f, o).stop_sequence) * 90;
+    const a = sensor("tram-a", { suffix: "fr", leg: true, delays: [0, 62, 0, 130, 0, 0],
+      duration: Math.round(run("tram-a", "L'Indien", "De Gaulle") / 60),
+      attributes: { friendly_name: "A: L'Indien → De Gaulle",
+        origin_station_stop_id: stopOf("tram-a", "L'Indien").stop_id, origin_station_stop_name: "L'Indien",
+        destination_station_stop_id: stopOf("tram-a", "De Gaulle").stop_id, destination_station_stop_name: "De Gaulle" } });
+    const b = sensor("tram-b", { suffix: "fr", delays: [45, 0, 0, 0, 190, 0] });
+    const c = sensor("bus-40", { suffix: "fr", delays: [0, 0, 95, 0, 0, 0] });
+    card({ lines: [a, b, c], title: "Three stops near home", max_departures: 8, show_map: false }, null, null, W);
   } else if (page === "boarding") {
     // Les règles de montée et de descente du fichier de tronçon : un trajet
     // pris à Victor Hugo et quitté à Royale-Châtelet sur le tram A, dont
